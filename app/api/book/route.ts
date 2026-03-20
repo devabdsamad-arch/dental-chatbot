@@ -1,19 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getClientConfig } from "@/lib/getClientConfig";
 import { bookAppointment } from "@/lib/googleCalendar";
-import { saveSessionStat } from "@/lib/db";
+import { saveSessionStat, scheduleReminder } from "@/lib/db";
 import { sendBookingConfirmation } from "@/lib/sms";
-import { scheduleReminders } from "@/lib/reminderQueue";
-import { formatInTimeZone } from "date-fns-tz";
-import { parseISO } from "date-fns";
-
-// ================================================
-// BOOK APPOINTMENT ROUTE
-// ------------------------------------------------
-// 1. Creates event in clinic's Google Calendar
-// 2. Sends SMS confirmation to patient
-// 3. Queues 24hr reminder, 1hr reminder, review request
-// ================================================
+import { parseISO, subHours, addHours, format } from "date-fns";
 
 export async function POST(req: NextRequest) {
   try {
@@ -42,12 +32,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const timezone      = config.timezone ?? "Australia/Melbourne";
-    const dateFormatted = formatInTimeZone(parseISO(isoStart), timezone, "EEEE d MMM");
-    const timeFormatted = formatInTimeZone(parseISO(isoStart), timezone, "h:mm a");
+    const appointmentStart = parseISO(isoStart);
+    const dateLabel        = format(appointmentStart, "EEEE d MMM");
+    const timeLabel        = format(appointmentStart, "h:mm a");
 
-    // ── 1. BOOK IN GOOGLE CALENDAR ───────────────
-    const calendarResult = await bookAppointment({
+    // 1. Create Google Calendar event
+    const calResult = await bookAppointment({
       config,
       patientName,
       patientPhone,
@@ -56,30 +46,50 @@ export async function POST(req: NextRequest) {
       isoEnd,
     });
 
-    // ── 2. SEND CONFIRMATION SMS ─────────────────
-    const smsSent = await sendBookingConfirmation({
+    // 2. Send immediate SMS confirmation
+    await sendBookingConfirmation({
       to:          patientPhone,
       patientName,
       clinicName:  config.name,
       clinicPhone: config.phone,
       service,
-      date:        dateFormatted,
-      time:        timeFormatted,
+      date:        dateLabel,
+      time:        timeLabel,
     });
 
-    // ── 3. QUEUE REMINDERS ───────────────────────
-    await scheduleReminders({
+    // 3. Schedule 24hr reminder
+    const reminderTime = subHours(appointmentStart, 24);
+    if (reminderTime > new Date()) {
+      await scheduleReminder({
+        clientId,
+        phone:  patientPhone,
+        type:   "24hr_reminder",
+        sendAt: reminderTime,
+        payload: {
+          patientName,
+          clinicName:  config.name,
+          clinicPhone: config.phone,
+          service,
+          time:        timeLabel,
+        },
+      });
+    }
+
+    // 4. Schedule post-visit review request (2hrs after appointment ends)
+    const reviewTime = addHours(parseISO(isoEnd), 2);
+    await scheduleReminder({
       clientId,
-      patientName,
-      patientPhone,
-      service,
-      appointmentIso: isoStart,
-      reviewLink: `https://g.page/r/${clientId}/review`,
-      // ⚠️ Replace with the clinic's actual Google review link
-      // Add reviewLink to ClientConfig once you have it per client
+      phone:  patientPhone,
+      type:   "review",
+      sendAt: reviewTime,
+      payload: {
+        patientName,
+        clinicName: config.name,
+        reviewUrl:  config.bookingUrl ?? `https://search.google.com/search?q=${encodeURIComponent(config.name)}`,
+      },
     });
 
-    // ── 4. UPDATE SESSION STAT ───────────────────
+    // 5. Update anonymous session stat
     if (sessionId) {
       await saveSessionStat({
         clientId,
@@ -93,10 +103,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success:          true,
+      eventId:          calResult?.eventId  ?? null,
+      calendarLink:     calResult?.htmlLink ?? null,
       confirmationCode: `CF-${Date.now().toString(36).toUpperCase()}`,
-      calendarLink:     calendarResult?.htmlLink ?? null,
-      smsSent,
-      remindersQueued:  true,
+      smsSent:          true,
     });
 
   } catch (error) {
