@@ -2,15 +2,24 @@ import { NextRequest, NextResponse } from "next/server";
 import { getClientConfig } from "@/lib/getClientConfig";
 import { buildSystemPrompt } from "@/lib/buildSystemPrompt";
 import { detectUrgency, detectIntent } from "@/lib/utils";
-import { getAvailableSlots, bookAppointment } from "@/lib/googleCalendar";
+import { getAvailableSlots, AvailableSlot } from "@/lib/googleCalendar";
 import { saveSessionStat } from "@/lib/db";
+import {
+  isBookingConfirmation,
+  detectSlotSelection,
+  extractService,
+  extractPatientName,
+  extractPhone,
+} from "@/lib/bookingDetector";
+
+// Session slot cache — stores offered slots per session
+// so we know which slots were presented to the patient
+const sessionSlotCache = new Map<string, AvailableSlot[]>();
 
 export async function POST(req: NextRequest) {
   try {
     const { default: OpenAI } = await import("openai");
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const { clientId, messages, sessionId } = await req.json();
 
@@ -34,21 +43,28 @@ export async function POST(req: NextRequest) {
 
     let systemPrompt = buildSystemPrompt(config);
 
-    // ── REAL CALENDAR SLOTS ──────────────────────
-    if (isBookingRequest) {
-      const slots = await getAvailableSlots(config);
+    // ── FETCH REAL CALENDAR SLOTS ─────────────────
+    let currentSlots: AvailableSlot[] = [];
 
-      if (slots.length === 0) {
-        systemPrompt += `\n\nNo slots available in the next 5 working days. Apologise warmly and ask if they'd like to be added to a waitlist or try a different week.`;
+    if (isBookingRequest) {
+      currentSlots = await getAvailableSlots(config);
+
+      // Cache slots for this session
+      if (sessionId) {
+        sessionSlotCache.set(sessionId, currentSlots);
+      }
+
+      if (currentSlots.length === 0) {
+        systemPrompt += `\n\nNo slots available in the next 5 working days. Apologise warmly and ask if they'd like to try a different week.`;
       } else {
-        const slotLines = slots
-          .map(s => `${s.date} at ${s.time} [${s.isoStart}|${s.isoEnd}]`)
+        const slotLines = currentSlots
+          .map(s => `${s.date} at ${s.time}`)
           .join("\n");
-        systemPrompt += `\n\nREAL AVAILABLE SLOTS (the ISO times in brackets are for the BOOK tag only — never show them to the patient):\n${slotLines}`;
+        systemPrompt += `\n\nREAL AVAILABLE SLOTS from the clinic calendar:\n${slotLines}\n\nPresent 2-3 of these conversationally. Do not list them all.`;
       }
     }
 
-    // ── CALL OPENAI ──────────────────────────────
+    // ── CALL OPENAI ───────────────────────────────
     const completion = await openai.chat.completions.create({
       model:       "gpt-4o-mini",
       max_tokens:  500,
@@ -62,105 +78,94 @@ export async function POST(req: NextRequest) {
       ],
     });
 
-    let reply = completion.choices[0].message.content ?? "";
+    const reply = completion.choices[0].message.content ?? "";
 
-    // ── PROCESS BOOKING TAG ──────────────────────
-    // If the bot included a [BOOK:...] tag, extract it,
-    // create the calendar event, then strip the tag from
-    // the reply so the patient never sees it
-    let bookingResult = null;
-    const bookTagMatch = reply.match(
-      /\[BOOK:slot=([^|]+)\|end=([^|]+)\|service=([^|]+)\|name=([^|]+)\|phone=([^\]]+)\]/
-    );
+    // ── SMART BOOKING DETECTION ───────────────────
+    // We detect booking confirmation from conversation
+    // state — no AI tag needed, far more reliable
+    let bookingTriggered = false;
 
-    if (bookTagMatch) {
-      const [fullTag, isoStart, isoEnd, service, patientName, patientPhone] = bookTagMatch;
+    if (sessionId && isBookingConfirmation(reply)) {
+      // Get cached slots for this session
+      const offeredSlots = sessionSlotCache.get(sessionId) ?? [];
 
-      // Strip tag from reply immediately — patient never sees it
-      reply = reply.replace(fullTag, "").trim();
+      // Find which slot was selected across all user messages
+      let selectedSlot: AvailableSlot | null = null;
+      for (const msg of messages.filter((m: any) => m.role === "user")) {
+        const found = detectSlotSelection(msg.content, offeredSlots);
+        if (found) { selectedSlot = found; break; }
+      }
 
-      // Call the book route internally to handle:
-      // calendar event + SMS confirmation + scheduled reminders
-      try {
-        const bookRes = await fetch(
-          `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/api/book`,
-          {
+      // Also check last user message directly
+      if (!selectedSlot) {
+        selectedSlot = detectSlotSelection(lastUserMessage, offeredSlots);
+      }
+
+      const patientName  = extractPatientName(messages);
+      const patientPhone = extractPhone(messages);
+      const service      = extractService(messages);
+
+      if (selectedSlot && patientName && patientPhone) {
+        // Fire booking — calendar event + SMS + reminders
+        try {
+          const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+          const bookRes = await fetch(`${appUrl}/api/book`, {
             method:  "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               clientId,
               sessionId,
-              patientName:  patientName.trim(),
-              patientPhone: patientPhone.trim(),
-              service:      service.trim(),
-              isoStart:     isoStart.trim(),
-              isoEnd:       isoEnd.trim(),
+              patientName,
+              patientPhone,
+              service,
+              isoStart: selectedSlot.isoStart,
+              isoEnd:   selectedSlot.isoEnd,
             }),
-          }
+          });
+
+          const bookData = await bookRes.json();
+          bookingTriggered = bookData.success === true;
+
+          console.log(
+            `[Booking] ${config.name} — ${patientName}, ${service}, ` +
+            `${selectedSlot.date} ${selectedSlot.time}, ` +
+            `calendar: ${bookData.eventId ? "✓" : "✗"}, ` +
+            `sms: ${bookData.smsSent ? "✓" : "✗"}`
+          );
+
+          // Clear slot cache after successful booking
+          sessionSlotCache.delete(sessionId);
+
+        } catch (bookErr) {
+          console.error("[Booking failed]", bookErr);
+        }
+      } else {
+        // Log what's missing so we can debug
+        console.log(
+          `[Booking attempted but incomplete] ` +
+          `slot: ${selectedSlot ? "✓" : "✗"} ` +
+          `name: ${patientName ? "✓" : "✗"} ` +
+          `phone: ${patientPhone ? "✓" : "✗"}`
         );
-        const bookData = await bookRes.json();
-        bookingResult  = bookData;
-        console.log(`[Booking] ${config.name} — ${patientName}, ${service}`);
-      } catch (bookErr) {
-        console.error("Booking failed:", bookErr);
-      }
-    } else {
-      // Non-booking message — just save stat
-      if (sessionId) {
-        await saveSessionStat({
-          clientId,
-          sessionId,
-          urgency,
-          intent,
-          messageCount:      messages.length + 1,
-          bookedAppointment: false,
-        });
       }
     }
 
-    // ── NOTIFY CLINIC IF LEAD CAPTURED ───────────
-    const allUserText = messages
-      .filter((m: any) => m.role === "user")
-      .map((m: any) => m.content)
-      .join(" ");
-
-    const phoneMatch = allUserText.match(/(\+?[\d\s\-().]{9,15})/);
-    const nameMatch  = extractName(messages);
-
-    if (phoneMatch && nameMatch) {
-      // ⚠️ Email notification to clinic (Resend — next integration)
-      console.log(`[Lead] ${config.name} — ${nameMatch}, ${phoneMatch[0]}`);
+    // ── SAVE ANONYMOUS SESSION STAT ───────────────
+    if (sessionId) {
+      await saveSessionStat({
+        clientId,
+        sessionId,
+        urgency,
+        intent,
+        messageCount:      messages.length + 1,
+        bookedAppointment: bookingTriggered,
+      });
     }
 
-    return NextResponse.json({
-      reply,
-      urgency,
-      booked: bookingResult !== null,
-      calendarLink: bookingResult?.htmlLink ?? null,
-    });
+    return NextResponse.json({ reply, urgency, booked: bookingTriggered });
 
   } catch (error: any) {
     console.error("Chat API error:", error);
-    return NextResponse.json(
-      { error: "Something went wrong." },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
   }
-}
-
-function extractName(messages: any[]): string | null {
-  for (let i = 1; i < messages.length; i++) {
-    const prev = messages[i - 1];
-    const curr = messages[i];
-    if (
-      prev.role === "assistant" &&
-      /your name|name please/i.test(prev.content) &&
-      curr.role === "user" &&
-      curr.content.trim().split(" ").length <= 4 &&
-      !/\d/.test(curr.content)
-    ) {
-      return curr.content.trim();
-    }
-  }
-  return null;
 }
