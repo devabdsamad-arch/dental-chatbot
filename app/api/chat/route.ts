@@ -12,23 +12,19 @@ import {
   extractPhone,
 } from "@/lib/bookingDetector";
 
-// Session slot cache — stores offered slots per session
-// so we know which slots were presented to the patient
-const sessionSlotCache = new Map<string, AvailableSlot[]>();
-
 export async function POST(req: NextRequest) {
   try {
     const { default: OpenAI } = await import("openai");
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    const { clientId, messages, sessionId } = await req.json();
+    // offeredSlots is passed back from the frontend on every request
+    // This solves the serverless statelessness problem — slots live
+    // on the client side, not in server memory
+    const { clientId, messages, sessionId, offeredSlots: previousSlots = [] } = await req.json();
 
     const config = getClientConfig(clientId);
     if (!config) {
-      return NextResponse.json(
-        { error: "Client not found or inactive" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Client not found or inactive" }, { status: 404 });
     }
 
     const lastUserMessage = messages
@@ -41,26 +37,21 @@ export async function POST(req: NextRequest) {
     const isBookingRequest =
       /book|appointment|schedule|available|slot|when can|come in|next available/i.test(lastUserMessage);
 
-    let systemPrompt = buildSystemPrompt(config);
+    let systemPrompt   = buildSystemPrompt(config);
+    let currentSlots: AvailableSlot[] = previousSlots; // carry forward from previous turns
 
-    // ── FETCH REAL CALENDAR SLOTS ─────────────────
-    let currentSlots: AvailableSlot[] = [];
-
+    // ── FETCH REAL SLOTS ──────────────────────────
     if (isBookingRequest) {
-      currentSlots = await getAvailableSlots(config);
+      const freshSlots = await getAvailableSlots(config);
+      currentSlots     = freshSlots; // refresh
 
-      // Cache slots for this session
-      if (sessionId) {
-        sessionSlotCache.set(sessionId, currentSlots);
-      }
-
-      if (currentSlots.length === 0) {
-        systemPrompt += `\n\nNo slots available in the next 5 working days. Apologise warmly and ask if they'd like to try a different week.`;
+      if (freshSlots.length === 0) {
+        systemPrompt += `\n\nNo slots in next 5 working days. Apologise and ask if they'd like to try a different week.`;
       } else {
-        const slotLines = currentSlots
+        const slotLines = freshSlots
           .map(s => `${s.date} at ${s.time}`)
           .join("\n");
-        systemPrompt += `\n\nREAL AVAILABLE SLOTS from the clinic calendar:\n${slotLines}\n\nPresent 2-3 of these conversationally. Do not list them all.`;
+        systemPrompt += `\n\nREAL AVAILABLE SLOTS:\n${slotLines}\n\nPresent 2-3 naturally. Never show ISO times.`;
       }
     }
 
@@ -80,35 +71,33 @@ export async function POST(req: NextRequest) {
 
     const reply = completion.choices[0].message.content ?? "";
 
-    // ── SMART BOOKING DETECTION ───────────────────
-    // We detect booking confirmation from conversation
-    // state — no AI tag needed, far more reliable
+    // ── BOOKING DETECTION ─────────────────────────
     let bookingTriggered = false;
 
-    if (sessionId && isBookingConfirmation(reply)) {
-      // Get cached slots for this session
-      const offeredSlots = sessionSlotCache.get(sessionId) ?? [];
+    const isConfirmation = isBookingConfirmation(reply);
+    console.log(`[Debug] isConfirmation: ${isConfirmation}, slots available: ${currentSlots.length}`);
 
-      // Find which slot was selected across all user messages
+    if (sessionId && isConfirmation && currentSlots.length > 0) {
+      // Search all user messages for slot selection
       let selectedSlot: AvailableSlot | null = null;
-      for (const msg of messages.filter((m: any) => m.role === "user")) {
-        const found = detectSlotSelection(msg.content, offeredSlots);
+      for (const msg of [...messages].reverse().filter((m: any) => m.role === "user")) {
+        const found = detectSlotSelection(msg.content, currentSlots);
         if (found) { selectedSlot = found; break; }
-      }
-
-      // Also check last user message directly
-      if (!selectedSlot) {
-        selectedSlot = detectSlotSelection(lastUserMessage, offeredSlots);
       }
 
       const patientName  = extractPatientName(messages);
       const patientPhone = extractPhone(messages);
       const service      = extractService(messages);
 
+      console.log(
+        `[Debug] slot: ${selectedSlot?.time ?? "null"} | ` +
+        `name: ${patientName ?? "null"} | ` +
+        `phone: ${patientPhone ?? "null"}`
+      );
+
       if (selectedSlot && patientName && patientPhone) {
-        // Fire booking — calendar event + SMS + reminders
         try {
-          const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+          const appUrl  = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
           const bookRes = await fetch(`${appUrl}/api/book`, {
             method:  "POST",
             headers: { "Content-Type": "application/json" },
@@ -123,26 +112,22 @@ export async function POST(req: NextRequest) {
             }),
           });
 
-          const bookData = await bookRes.json();
+          const bookData   = await bookRes.json();
           bookingTriggered = bookData.success === true;
 
           console.log(
             `[Booking] ${config.name} — ${patientName}, ${service}, ` +
-            `${selectedSlot.date} ${selectedSlot.time}, ` +
-            `calendar: ${bookData.eventId ? "✓" : "✗"}, ` +
+            `${selectedSlot.date} ${selectedSlot.time} | ` +
+            `calendar: ${bookData.eventId ? "✓" : "✗"} | ` +
             `sms: ${bookData.smsSent ? "✓" : "✗"}`
           );
 
-          // Clear slot cache after successful booking
-          sessionSlotCache.delete(sessionId);
-
-        } catch (bookErr) {
-          console.error("[Booking failed]", bookErr);
+        } catch (err) {
+          console.error("[Booking failed]", err);
         }
       } else {
-        // Log what's missing so we can debug
         console.log(
-          `[Booking attempted but incomplete] ` +
+          `[Booking incomplete] ` +
           `slot: ${selectedSlot ? "✓" : "✗"} ` +
           `name: ${patientName ? "✓" : "✗"} ` +
           `phone: ${patientPhone ? "✓" : "✗"}`
@@ -150,7 +135,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── SAVE ANONYMOUS SESSION STAT ───────────────
+    // ── SAVE SESSION STAT ─────────────────────────
     if (sessionId) {
       await saveSessionStat({
         clientId,
@@ -162,7 +147,13 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    return NextResponse.json({ reply, urgency, booked: bookingTriggered });
+    // Return slots back to frontend so they persist across turns
+    return NextResponse.json({
+      reply,
+      urgency,
+      booked:       bookingTriggered,
+      offeredSlots: currentSlots,
+    });
 
   } catch (error: any) {
     console.error("Chat API error:", error);
