@@ -3,19 +3,20 @@
 import { useCallback, useRef } from "react";
 import { useChatStore } from "./useChatStore";
 import { ClientConfig } from "@/types";
-const uuidv4 = () => crypto.randomUUID();
+import { v4 as uuidv4 } from "uuid";
 
 export function useChat(config: ClientConfig) {
   const {
     messages,
     lead,
+    offeredSlots,
     addMessage,
     setLoading,
     updateLead,
     setUrgency,
+    setOfferedSlots,
   } = useChatStore();
 
-  // Unique session ID per page load — anonymous, no personal data
   const sessionId = useRef<string>(uuidv4());
 
   const sendMessage = useCallback(
@@ -30,8 +31,9 @@ export function useChat(config: ClientConfig) {
           method:  "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            clientId:  config.id,
-            sessionId: sessionId.current,
+            clientId:     config.id,
+            sessionId:    sessionId.current,
+            offeredSlots, // persisted in Zustand — survives re-renders
             messages: [
               ...messages.map((m) => ({
                 role:    m.role,
@@ -46,17 +48,22 @@ export function useChat(config: ClientConfig) {
 
         const data = await res.json();
 
-        if (data.urgency) setUrgency(data.urgency);
+        if (data.urgency)      setUrgency(data.urgency);
+
+        // Store slots in Zustand — persists across all future calls
+        if (data.offeredSlots && data.offeredSlots.length > 0) {
+          setOfferedSlots(data.offeredSlots);
+        }
 
         addMessage("assistant", data.reply);
 
-        // Track locally for UX purposes only — never sent to our DB
+        // Local UX tracking only
         const lastBotMsg = messages
           .filter((m) => m.role === "assistant")
           .at(-1)?.content ?? "";
 
-        const isNameRequest  = /your name|name please/i.test(lastBotMsg);
-        const looksLikeName  = userText.trim().split(" ").length <= 4 &&
+        const isNameRequest = /your name|name to hold|name please/i.test(lastBotMsg);
+        const looksLikeName = userText.trim().split(" ").length <= 5 &&
           !/\d/.test(userText) && userText.length < 40;
 
         if (isNameRequest && looksLikeName && !lead.name) {
@@ -77,7 +84,7 @@ export function useChat(config: ClientConfig) {
         setLoading(false);
       }
     },
-    [messages, lead, config, addMessage, setLoading, updateLead, setUrgency]
+    [messages, lead, offeredSlots, config, addMessage, setLoading, updateLead, setUrgency, setOfferedSlots]
   );
 
   return { sendMessage };

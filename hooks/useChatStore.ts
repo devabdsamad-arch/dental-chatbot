@@ -16,6 +16,7 @@ interface ChatStore {
   stage: ConversationStage;
   urgency: "routine" | "soon" | "emergency";
   hasGreeted: boolean;
+  offeredSlots: any[];
 
   // Actions
   openChat: () => void;
@@ -27,6 +28,7 @@ interface ChatStore {
   setStage: (stage: ConversationStage) => void;
   setUrgency: (urgency: "routine" | "soon" | "emergency") => void;
   setHasGreeted: (val: boolean) => void;
+  setOfferedSlots: (slots: any[]) => void;
   reset: () => void;
 }
 
@@ -38,6 +40,7 @@ const initialState = {
   stage: "greeting" as ConversationStage,
   urgency: "routine" as const,
   hasGreeted: false,
+  offeredSlots: [] as any[],
 };
 
 export const useChatStore = create<ChatStore>((set) => ({
@@ -71,6 +74,8 @@ export const useChatStore = create<ChatStore>((set) => ({
   setUrgency: (urgency) => set({ urgency }),
 
   setHasGreeted: (val) => set({ hasGreeted: val }),
+
+  setOfferedSlots: (slots) => set({ offeredSlots: slots }),
 
   reset: () => set(initialState),
 }));

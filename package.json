@@ -26,6 +26,7 @@
     "recharts": "^3.8.0",
     "tailwind-merge": "^3.5.0",
     "twilio": "^5.13.0",
+    "uuid": "^13.0.0",
     "zustand": "^5.0.12"
   },
   "devDependencies": {
