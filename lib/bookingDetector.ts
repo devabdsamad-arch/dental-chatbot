@@ -145,18 +145,19 @@ export function extractPatientName(messages: any[]): string | null {
 }
 
 export function extractPhone(messages: any[]): string | null {
-  const allText = messages
+  const userMessages = messages
     .filter((m: any) => m.role === "user")
-    .map((m: any) => m.content)
-    .join(" ");
+    .map((m: any) => m.content);
 
-  // International format first
-  const intl = allText.match(/\+[\d\s\-().]{9,18}/);
-  if (intl) return intl[0].replace(/\s+/g, "").trim();
+  for (const text of userMessages) {
+    // Match international format: +92XXXXXXXXXX (exact digits, no trailing chars)
+    const intl = text.match(/\+\d{10,14}(?!\d)/);
+    if (intl) return intl[0].trim();
 
-  // Local format
-  const local = allText.match(/[\d\s\-().]{9,15}/);
-  if (local) return local[0].replace(/\s+/g, "").trim();
+    // Match local format: 10-11 digit number
+    const local = text.match(/\d{10,11}/);
+    if (local) return local[0].trim();
+  }
 
   return null;
 }
