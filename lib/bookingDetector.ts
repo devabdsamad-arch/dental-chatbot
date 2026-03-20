@@ -20,19 +20,33 @@ export function detectSlotSelection(
 ): AvailableSlot | null {
   const lower = userMessage.toLowerCase().trim();
 
-  // Direct time match
+  // Direct time match — covers "9:00 AM", "9am", "9", "10", "11" etc
   for (const slot of offeredSlots) {
     const timeLower  = slot.time.toLowerCase();
     const timeClean  = timeLower.replace(/\s/g, "");
     const dateLower  = slot.date.toLowerCase();
 
+    // Extract just the hour number from the slot time e.g. "9:00 AM" -> "9"
+    const hourMatch  = slot.time.match(/^(\d{1,2})/);
+    const hourOnly   = hourMatch ? hourMatch[1] : null;
+
     if (
       lower.includes(timeLower)  ||
       lower.includes(timeClean)  ||
-      lower.includes(dateLower)
+      lower.includes(dateLower)  ||
+      // Match bare hour: user types "9" and slot is "9:00 AM"
+      (hourOnly && new RegExp(`\b${hourOnly}\b`).test(userMessage) && 
+       !offeredSlots.some(s => s !== slot && s.time.startsWith(hourOnly + ":")))
     ) {
       return slot;
     }
+  }
+
+  // If only one slot starts with the typed hour (handles ambiguity)
+  const hourTyped = userMessage.trim().match(/^(\d{1,2})$/);
+  if (hourTyped) {
+    const matched = offeredSlots.filter(s => s.time.startsWith(hourTyped[1] + ":"));
+    if (matched.length === 1) return matched[0];
   }
 
   // Positional selection
