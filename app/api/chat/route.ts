@@ -11,9 +11,12 @@ import {
   extractPatientName,
   extractPhone,
 } from "@/lib/bookingDetector";
+import {
+  extractRequestedTime,
+  findMatchingSlot,
+  getClosestSlots,
+} from "@/lib/slotValidator";
 
-// Track sessions that already fired a booking
-// Prevents duplicate bookings from multiple confirmation messages
 const bookedSessions = new Set<string>();
 
 export async function POST(req: NextRequest) {
@@ -21,9 +24,6 @@ export async function POST(req: NextRequest) {
     const { default: OpenAI } = await import("openai");
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // offeredSlots is passed back from the frontend on every request
-    // This solves the serverless statelessness problem — slots live
-    // on the client side, not in server memory
     const { clientId, messages, sessionId, offeredSlots: previousSlots = [] } = await req.json();
 
     const config = getClientConfig(clientId);
@@ -38,25 +38,58 @@ export async function POST(req: NextRequest) {
     const urgency = detectUrgency(lastUserMessage);
     const intent  = detectIntent(lastUserMessage);
 
-    const isBookingRequest =
-      /book|appointment|schedule|available|slot|when can|come in|next available/i.test(lastUserMessage);
+    // Scan full conversation for booking intent
+    const allUserText = messages
+      .filter((m: any) => m.role === "user")
+      .map((m: any) => m.content)
+      .join(" ");
+
+    const isBookingConversation =
+      /book|appointment|schedule|available|slot|when can|come in|next available|saturday|sunday|monday|tuesday|wednesday|thursday|friday|morning|afternoon|evening|[0-9]{1,2}\s*(am|pm)/i.test(allUserText) ||
+      previousSlots.length > 0;
 
     let systemPrompt   = buildSystemPrompt(config);
-    let currentSlots: AvailableSlot[] = previousSlots; // carry forward from previous turns
+    let currentSlots: AvailableSlot[] = previousSlots;
 
     // ── FETCH REAL SLOTS ──────────────────────────
-    if (isBookingRequest) {
+    if (isBookingConversation) {
       const freshSlots = await getAvailableSlots(config);
-      currentSlots     = freshSlots; // refresh
+      currentSlots     = freshSlots;
+    }
 
-      if (freshSlots.length === 0) {
-        systemPrompt += `\n\nNo slots in next 5 working days. Apologise and ask if they'd like to try a different week.`;
-      } else {
-        const slotLines = freshSlots
-          .map(s => `${s.date} at ${s.time}`)
-          .join("\n");
-        systemPrompt += `\n\nREAL AVAILABLE SLOTS:\n${slotLines}\n\nPresent 2-3 naturally. Never show ISO times.`;
+    // ── PRE-VALIDATE REQUESTED TIME ───────────────
+    // Do this BEFORE calling OpenAI so the AI never
+    // makes availability decisions — we do it for them
+    let availabilityOverride: string | null = null;
+
+    if (currentSlots.length > 0) {
+      const requestedTime = extractRequestedTime(lastUserMessage);
+
+      if (requestedTime) {
+        const matchingSlot = findMatchingSlot(requestedTime, currentSlots);
+
+        if (matchingSlot) {
+          // Time is available — tell AI to offer exactly this slot
+          availabilityOverride =
+            `The patient requested ${matchingSlot.time} and it IS available. ` +
+            `Offer them ${matchingSlot.date} at ${matchingSlot.time}. Do not offer other times unless they ask.`;
+        } else {
+          // Time is NOT available — tell AI to reject and give alternatives
+          const alternatives = getClosestSlots(requestedTime, currentSlots);
+          const altText      = alternatives.map(s => `${s.date} at ${s.time}`).join(" or ");
+          availabilityOverride =
+            `The patient requested a time that is NOT available. ` +
+            `Tell them that time is unavailable. ` +
+            `The closest available alternatives are: ${altText}. ` +
+            `Only offer these alternatives.`;
+        }
       }
+
+      // Always inject full slot list so AI knows what exists
+      const slotLines = currentSlots.map(s => `${s.date} at ${s.time}`).join("\n");
+      systemPrompt +=
+        `\n\nAVAILABLE SLOTS:\n${slotLines}` +
+        (availabilityOverride ? `\n\nAVAILABILITY INSTRUCTION: ${availabilityOverride}` : "");
     }
 
     // ── CALL OPENAI ───────────────────────────────
@@ -77,13 +110,11 @@ export async function POST(req: NextRequest) {
 
     // ── BOOKING DETECTION ─────────────────────────
     let bookingTriggered = false;
-
     const isConfirmation = isBookingConfirmation(reply);
-    console.log(`[Debug] isConfirmation: ${isConfirmation}, slots available: ${currentSlots.length}`);
 
-    if (sessionId && isConfirmation && currentSlots.length > 0) {
-      // Search all user messages for slot selection
+    if (sessionId && isConfirmation && currentSlots.length > 0 && !bookedSessions.has(sessionId)) {
       let selectedSlot: AvailableSlot | null = null;
+
       for (const msg of [...messages].reverse().filter((m: any) => m.role === "user")) {
         const found = detectSlotSelection(msg.content, currentSlots);
         if (found) { selectedSlot = found; break; }
@@ -94,12 +125,13 @@ export async function POST(req: NextRequest) {
       const service      = extractService(messages);
 
       console.log(
-        `[Debug] slot: ${selectedSlot?.time ?? "null"} | ` +
+        `[Debug] confirmation detected | ` +
+        `slot: ${selectedSlot?.time ?? "null"} | ` +
         `name: ${patientName ?? "null"} | ` +
         `phone: ${patientPhone ?? "null"}`
       );
 
-      if (selectedSlot && patientName && patientPhone && !bookedSessions.has(sessionId)) {
+      if (selectedSlot && patientName && patientPhone) {
         bookedSessions.add(sessionId);
         try {
           const appUrl  = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
@@ -126,7 +158,6 @@ export async function POST(req: NextRequest) {
             `calendar: ${bookData.eventId ? "✓" : "✗"} | ` +
             `sms: ${bookData.smsSent ? "✓" : "✗"}`
           );
-
         } catch (err) {
           console.error("[Booking failed]", err);
         }
@@ -152,7 +183,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Return slots back to frontend so they persist across turns
     return NextResponse.json({
       reply,
       urgency,
