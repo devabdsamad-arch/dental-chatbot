@@ -12,6 +12,10 @@ import {
   extractPhone,
 } from "@/lib/bookingDetector";
 
+// Track sessions that already fired a booking
+// Prevents duplicate bookings from multiple confirmation messages
+const bookedSessions = new Set<string>();
+
 export async function POST(req: NextRequest) {
   try {
     const { default: OpenAI } = await import("openai");
@@ -95,7 +99,8 @@ export async function POST(req: NextRequest) {
         `phone: ${patientPhone ?? "null"}`
       );
 
-      if (selectedSlot && patientName && patientPhone) {
+      if (selectedSlot && patientName && patientPhone && !bookedSessions.has(sessionId)) {
+        bookedSessions.add(sessionId);
         try {
           const appUrl  = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
           const bookRes = await fetch(`${appUrl}/api/book`, {
