@@ -8,7 +8,18 @@ const brightsmile: ClientConfig = {
   contactEmail: "dev.abdsamad@gmail.com", // ⚠️ clinic owner email — receives booking + lead notifications
   hours: "Monday–Friday 8am–6pm, Saturday 9am–2pm, closed Sunday",
   bookingUrl: "https://brightsmile.com.au/book",
-  timezone: "Australia/Melbourne",
+googleCalendarId: "dev.abdsamad@gmail.com",
+workingHours: {
+  monday:    { open: "08:00", close: "18:00" },
+  tuesday:   { open: "08:00", close: "18:00" },
+  wednesday: { open: "08:00", close: "18:00" },
+  thursday:  { open: "08:00", close: "18:00" },
+  friday:    { open: "08:00", close: "18:00" },
+  saturday:  { open: "09:00", close: "14:00" },
+  sunday:    null,
+},
+appointmentDuration: 60,
+timezone: "Australia/Melbourne",
   services: [
     "general checkup",
     "teeth cleaning",
