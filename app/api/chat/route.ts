@@ -128,8 +128,10 @@ export async function POST(req: NextRequest) {
     if (sessionId && isConfirmation && currentSlots.length > 0 && !alreadyBooked) {
       let selectedSlot: AvailableSlot | null = null;
 
+      console.log(`[Debug] currentSlots: ${currentSlots.map(s => s.time).join(", ")}`);
       for (const msg of [...messages].reverse().filter((m: any) => m.role === "user")) {
         const found = detectSlotSelection(msg.content, currentSlots);
+        console.log(`[Debug] checking msg: "${msg.content}" -> ${found?.time ?? "no match"}`);
         if (found) { selectedSlot = found; break; }
       }
 
