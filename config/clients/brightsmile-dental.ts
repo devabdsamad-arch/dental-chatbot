@@ -5,7 +5,7 @@ const brightsmile: ClientConfig = {
   name: "BrightSmile Dental Clinic",
   location: "Level 2, 120 Collins St, Melbourne VIC 3000",
   phone: "(03) 9123 4567",
-  contactEmail: "rachel@brightsmile.com.au", // ⚠️ clinic owner email — receives booking + lead notifications
+  contactEmail: "dev.abdsamad@gmail.com", // ⚠️ clinic owner email — receives booking + lead notifications
   hours: "Monday–Friday 8am–6pm, Saturday 9am–2pm, closed Sunday",
   bookingUrl: "https://brightsmile.com.au/book",
   timezone: "Australia/Melbourne",
