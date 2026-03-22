@@ -50,7 +50,7 @@ export function getServiceDuration(config: ClientConfig, service: string): numbe
 export async function getAvailableSlots(
   config: ClientConfig,
   daysAhead = 5,
-  slotIntervalMins = 15  // check every 15 mins — max flexibility
+  serviceName?: string
 ): Promise<AvailableSlot[]> {
 
   if (!config.googleCalendarId || !config.workingHours) {
@@ -61,13 +61,25 @@ export async function getAvailableSlots(
   try {
     const calendar   = getCalendarClient();
     const timezone   = config.timezone ?? "Australia/Melbourne";
-    const duration   = config.appointmentDuration ?? 45;
     const calendarId = config.googleCalendarId;
+
+    // Duration for this specific service
+    // This is used BOTH for the slot end time AND for overlap checking
+    // Using the actual service duration means:
+    // - A 45-min checkup at 8:15 correctly fits before a 9:00 booking
+    // - A 90-min root canal at 8:15 correctly gets blocked if 9:00 is busy
+    const serviceDuration = serviceName
+      ? getServiceDuration(config, serviceName)
+      : (config.appointmentDuration ?? 45);
+
+    // Scan interval — every 15 mins for maximum flexibility
+    const scanInterval = 15;
+
+    console.log(`[Slots] service: "${serviceName ?? "unknown"}", duration: ${serviceDuration}m`);
 
     const now       = new Date();
     const windowEnd = addDays(now, daysAhead + 4);
 
-    // Get all busy blocks in one call
     const freebusyRes = await calendar.freebusy.query({
       requestBody: {
         timeMin:  now.toISOString(),
@@ -96,29 +108,27 @@ export async function getAvailableSlots(
         const openStr  = `${dateStr}T${String(openH).padStart(2,"0")}:${String(openM).padStart(2,"0")}:00`;
         const closeStr = `${dateStr}T${String(closeH).padStart(2,"0")}:${String(closeM).padStart(2,"0")}:00`;
 
-        // Scan every 15 minutes for maximum flexibility
-        // This means 9:00, 9:15, 9:30, 9:45 etc are all candidate slots
-        let scanUtc        = fromZonedTime(new Date(openStr), timezone);
-        const dayCloseUtc  = fromZonedTime(new Date(closeStr), timezone);
+        let scanUtc       = fromZonedTime(new Date(openStr), timezone);
+        const dayCloseUtc = fromZonedTime(new Date(closeStr), timezone);
 
-        while (isBefore(addMinutes(scanUtc, duration), dayCloseUtc) ||
-               +addMinutes(scanUtc, duration) === +dayCloseUtc) {
+        while (isBefore(addMinutes(scanUtc, serviceDuration), dayCloseUtc) ||
+               +addMinutes(scanUtc, serviceDuration) === +dayCloseUtc) {
 
-          const slotEndUtc = addMinutes(scanUtc, duration);
+          // Slot end based on the actual service duration
+          const slotEndUtc = addMinutes(scanUtc, serviceDuration);
 
-          // Must be in the future
           if (isAfter(scanUtc, now)) {
             const overlaps = busyBlocks.some((block: any) => {
               const blockStart = parseISO(block.start);
               const blockEnd   = parseISO(block.end);
-              // Slot overlaps if it starts before block ends AND ends after block starts
+              // A slot overlaps if the appointment would run into a busy block
+              // Uses the actual service duration so a 45-min checkup at 8:15
+              // correctly fits before a 9:00 booking (8:15+45=9:00, not after 9:00)
               return isBefore(scanUtc, blockEnd) && isAfter(slotEndUtc, blockStart);
             });
 
             if (!overlaps) {
               const slotLocal = toZonedTime(scanUtc, timezone);
-              // Only add clean times (on the hour or on :15 :30 :45)
-              // This avoids offering 8:07 or 9:22 which look weird
               const mins = slotLocal.getMinutes();
               if (mins % 15 === 0) {
                 slots.push({
@@ -131,7 +141,7 @@ export async function getAvailableSlots(
             }
           }
 
-          scanUtc = addMinutes(scanUtc, slotIntervalMins);
+          scanUtc = addMinutes(scanUtc, scanInterval);
           if (slots.length >= 6) break;
         }
 
@@ -149,6 +159,7 @@ export async function getAvailableSlots(
     return getMockSlots(config);
   }
 }
+
 
 // ================================================
 // BOOK APPOINTMENT
@@ -272,9 +283,11 @@ export async function cancelAppointment(params: {
 // ================================================
 // MOCK SLOTS FALLBACK
 // ================================================
-function getMockSlots(config: ClientConfig): AvailableSlot[] {
+function getMockSlots(config: ClientConfig, serviceName?: string): AvailableSlot[] {
   const slots: AvailableSlot[] = [];
-  const duration = config.appointmentDuration ?? 60;
+  const duration = serviceName
+    ? getServiceDuration(config, serviceName)
+    : (config.appointmentDuration ?? 45);
   let cursor = addDays(new Date(), 1);
   let count  = 0;
 

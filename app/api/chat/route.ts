@@ -15,6 +15,7 @@ import {
   extractRequestedTime,
   findMatchingSlot,
   getClosestSlots,
+  isTimeWithinAvailableWindow,
 } from "@/lib/slotValidator";
 import { sendLeadNotification } from "@/lib/email";
 
@@ -52,7 +53,9 @@ export async function POST(req: NextRequest) {
 
     // ── FETCH REAL SLOTS ──────────────────────────
     if (isBookingConversation) {
-      const freshSlots = await getAvailableSlots(config);
+      // Pass service name so slots use correct duration for overlap checking
+      const detectedService = extractService(messages);
+      const freshSlots = await getAvailableSlots(config, 5, detectedService);
       currentSlots     = freshSlots;
     }
 
@@ -66,21 +69,30 @@ export async function POST(req: NextRequest) {
 
       if (requestedTime) {
         const matchingSlot = findMatchingSlot(requestedTime, currentSlots);
+        const withinWindow = isTimeWithinAvailableWindow(requestedTime, currentSlots);
 
         if (matchingSlot) {
-          // Time is available — tell AI to offer exactly this slot
+          // Exact match in slot list
           availabilityOverride =
             `The patient requested ${matchingSlot.time} and it IS available. ` +
-            `Offer them ${matchingSlot.date} at ${matchingSlot.time}. Do not offer other times unless they ask.`;
+            `Offer them ${matchingSlot.date} at ${matchingSlot.time}.`;
+        } else if (withinWindow) {
+          // Requested time is within a free window — it's available
+          // Find which day the nearest slot is on for context
+          const nearest = getClosestSlots(requestedTime, currentSlots)[0];
+          const [rH, rM] = requestedTime.split(":").map(Number);
+          const displayTime = `${rH > 12 ? rH - 12 : rH || 12}:${String(rM).padStart(2,"0")} ${rH >= 12 ? "PM" : "AM"}`;
+          availabilityOverride =
+            `The patient requested ${displayTime} and it IS available on ${nearest?.date ?? "that day"}. ` +
+            `Offer them ${nearest?.date ?? "that day"} at ${displayTime}.`;
         } else {
-          // Time is NOT available — tell AI to reject and give alternatives
+          // Time is genuinely not available
           const alternatives = getClosestSlots(requestedTime, currentSlots);
           const altText      = alternatives.map(s => `${s.date} at ${s.time}`).join(" or ");
           availabilityOverride =
             `The patient requested a time that is NOT available. ` +
-            `Tell them that time is unavailable. ` +
-            `The closest available alternatives are: ${altText}. ` +
-            `Only offer these alternatives.`;
+            `Tell them that time is taken. ` +
+            `The closest available times are: ${altText}.`;
         }
       }
 

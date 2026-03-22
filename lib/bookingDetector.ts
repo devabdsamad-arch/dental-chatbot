@@ -20,29 +20,35 @@ export function detectSlotSelection(
 ): AvailableSlot | null {
   const lower = userMessage.toLowerCase().trim();
 
-  // Direct time match — covers "9:00 AM", "9am", "9", "10", "11" etc
-  for (const slot of offeredSlots) {
-    const timeLower  = slot.time.toLowerCase();
-    const timeClean  = timeLower.replace(/\s/g, "");
-    const dateLower  = slot.date.toLowerCase();
+  // Normalise user input — "8.15", "8:15", "8 15" all become "8:15"
+  const normalised = lower
+    .replace(/(\d{1,2})[.\s](\d{2})/g, "$1:$2")  // 8.15 -> 8:15
+    .replace(/(\d{1,2})(am|pm)/g, "$1:00 $2");    // 8am -> 8:00 am
 
-    // Extract just the hour number from the slot time e.g. "9:00 AM" -> "9"
-    const hourMatch  = slot.time.match(/^(\d{1,2})/);
-    const hourOnly   = hourMatch ? hourMatch[1] : null;
+  // Normalise each slot time for comparison
+  const normaliseSlot = (t: string) =>
+    t.toLowerCase().replace(/\s/g, "").replace(/^(\d):/, "0$1:");
+
+  for (const slot of offeredSlots) {
+    const slotNorm  = normaliseSlot(slot.time);
+    const timeLower = slot.time.toLowerCase();
+    const timeClean = timeLower.replace(/\s/g, "");
+    const dateLower = slot.date.toLowerCase();
+
+    // Check normalised input against normalised slot
+    const normClean = normalised.replace(/\s/g, "");
 
     if (
-      lower.includes(timeLower)  ||
-      lower.includes(timeClean)  ||
-      lower.includes(dateLower)  ||
-      // Match bare hour: user types "9" and slot is "9:00 AM"
-      (hourOnly && new RegExp(`\b${hourOnly}\b`).test(userMessage) && 
-       !offeredSlots.some(s => s !== slot && s.time.startsWith(hourOnly + ":")))
+      normalised.includes(slotNorm)  ||
+      normClean.includes(timeClean)  ||
+      lower.includes(timeLower)      ||
+      lower.includes(dateLower)
     ) {
       return slot;
     }
   }
 
-  // If only one slot starts with the typed hour (handles ambiguity)
+  // Bare hour match — only if unambiguous (one slot for that hour)
   const hourTyped = userMessage.trim().match(/^(\d{1,2})$/);
   if (hourTyped) {
     const matched = offeredSlots.filter(s => s.time.startsWith(hourTyped[1] + ":"));
