@@ -136,3 +136,29 @@ export async function markReminderSentById(id: string) {
 
   if (error) console.error("Failed to mark reminder sent:", error);
 }
+
+
+// ── BOOKED SESSIONS (deduplication) ──────────────
+
+export async function hasSessionBooked(sessionId: string): Promise<boolean> {
+  const db = getSupabaseAdmin();
+  try {
+    const { data } = await db
+      .from("booked_sessions")
+      .select("session_id")
+      .eq("session_id", sessionId)
+      .single();
+    return !!data;
+  } catch {
+    return false;
+  }
+}
+
+export async function markSessionBooked(sessionId: string, clientId: string): Promise<boolean> {
+  const db = getSupabaseAdmin();
+  const { error } = await db
+    .from("booked_sessions")
+    .insert([{ session_id: sessionId, client_id: clientId }]);
+  // If insert fails due to duplicate — that's fine, it means already booked
+  return !error;
+}

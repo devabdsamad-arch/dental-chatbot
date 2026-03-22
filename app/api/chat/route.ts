@@ -3,7 +3,7 @@ import { getClientConfig } from "@/lib/getClientConfig";
 import { buildSystemPrompt } from "@/lib/buildSystemPrompt";
 import { detectUrgency, detectIntent } from "@/lib/utils";
 import { getAvailableSlots, AvailableSlot } from "@/lib/googleCalendar";
-import { saveSessionStat } from "@/lib/db";
+import { saveSessionStat, hasSessionBooked, markSessionBooked } from "@/lib/db";
 import {
   isBookingConfirmation,
   detectSlotSelection,
@@ -17,8 +17,6 @@ import {
   getClosestSlots,
 } from "@/lib/slotValidator";
 import { sendLeadNotification } from "@/lib/email";
-
-const bookedSessions = new Set<string>();
 
 export async function POST(req: NextRequest) {
   try {
@@ -113,7 +111,9 @@ export async function POST(req: NextRequest) {
     let bookingTriggered = false;
     const isConfirmation = isBookingConfirmation(reply);
 
-    if (sessionId && isConfirmation && currentSlots.length > 0 && !bookedSessions.has(sessionId)) {
+    const alreadyBooked = sessionId ? await hasSessionBooked(sessionId) : true;
+
+    if (sessionId && isConfirmation && currentSlots.length > 0 && !alreadyBooked) {
       let selectedSlot: AvailableSlot | null = null;
 
       for (const msg of [...messages].reverse().filter((m: any) => m.role === "user")) {
@@ -133,8 +133,12 @@ export async function POST(req: NextRequest) {
       );
 
       if (selectedSlot && patientName && patientPhone) {
-        bookedSessions.add(sessionId);
-        try {
+        // Mark in Supabase before firing — prevents duplicate bookings
+        // across multiple serverless function instances
+        const claimed = await markSessionBooked(sessionId, clientId);
+        if (!claimed) {
+          console.log(`[Booking] Session ${sessionId} already claimed — skipping duplicate`);
+        } else try {
           const appUrl  = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
           const bookRes = await fetch(`${appUrl}/api/book`, {
             method:  "POST",
@@ -169,6 +173,35 @@ export async function POST(req: NextRequest) {
           `name: ${patientName ? "✓" : "✗"} ` +
           `phone: ${patientPhone ? "✓" : "✗"}`
         );
+      }
+    }
+
+    // ── CANCELLATION DETECTION ───────────────────
+    // Detect when bot confirms a cancellation so we
+    // can delete the event from Google Calendar
+    const isCancellationConfirmation =
+      /cancel(l?ed|ling)|appointment.*removed|removed.*appointment|no longer.*booked|taken.*off/i.test(reply);
+
+    if (sessionId && isCancellationConfirmation && !bookingTriggered) {
+      const patientName  = extractPatientName(messages);
+      const patientPhone = extractPhone(messages);
+
+      if (patientName) {
+        try {
+          const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+          await fetch(`${appUrl}/api/cancel`, {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientId,
+              patientName,
+              patientPhone,
+            }),
+          });
+          console.log(`[Cancel] Fired for ${patientName} at ${config.name}`);
+        } catch (err) {
+          console.error("[Cancel] Failed:", err);
+        }
       }
     }
 

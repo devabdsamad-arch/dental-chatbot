@@ -197,6 +197,52 @@ export async function bookAppointment(params: {
 }
 
 // ================================================
+// CANCEL APPOINTMENT
+// ================================================
+export async function cancelAppointment(params: {
+  config:      ClientConfig;
+  patientName: string;
+  isoStart?:   string;
+}): Promise<boolean> {
+
+  if (!params.config.googleCalendarId) return false;
+
+  try {
+    const calendar   = getCalendarClient();
+    const calendarId = params.config.googleCalendarId;
+    const now        = new Date();
+    const future     = addDays(now, 30);
+
+    const eventsRes = await calendar.events.list({
+      calendarId,
+      timeMin:      params.isoStart ?? now.toISOString(),
+      timeMax:      future.toISOString(),
+      q:            params.patientName,
+      singleEvents: true,
+      orderBy:      "startTime",
+    });
+
+    const events = eventsRes.data.items ?? [];
+    const match  = events.find(e =>
+      e.summary?.toLowerCase().includes(params.patientName.toLowerCase())
+    );
+
+    if (!match?.id) {
+      console.log(`[Cancel] No event found for ${params.patientName}`);
+      return false;
+    }
+
+    await calendar.events.delete({ calendarId, eventId: match.id });
+    console.log(`[Cancel] Deleted: ${match.summary}`);
+    return true;
+
+  } catch (err) {
+    console.error("[Cancel] Failed:", err);
+    return false;
+  }
+}
+
+// ================================================
 // MOCK SLOTS FALLBACK
 // ================================================
 function getMockSlots(config: ClientConfig): AvailableSlot[] {
@@ -215,7 +261,6 @@ function getMockSlots(config: ClientConfig): AvailableSlot[] {
         setMinutes(setHours(new Date(cursor), openH), openM),
         addMinutes(setMinutes(setHours(new Date(cursor), openH), openM), duration * 2),
       ];
-
       for (const t of times) {
         if (count >= 6) break;
         slots.push({
@@ -227,10 +272,8 @@ function getMockSlots(config: ClientConfig): AvailableSlot[] {
         count++;
       }
     }
-
     cursor = addDays(cursor, 1);
     if (+cursor > +addDays(new Date(), 30)) break;
   }
-
   return slots;
 }

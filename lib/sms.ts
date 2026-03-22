@@ -92,3 +92,8 @@ export async function sendReviewRequest(params: {
 
   return sendSMSRaw(params.to, msg);
 }
+
+// ── GENERIC SMS SEND ─────────────────────────────
+export async function sendSMS(to: string, body: string): Promise<boolean> {
+  return sendSMSRaw(to, body);
+}
