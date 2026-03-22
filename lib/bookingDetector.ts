@@ -25,23 +25,25 @@ export function detectSlotSelection(
     .replace(/(\d{1,2})[.\s](\d{2})/g, "$1:$2")  // 8.15 -> 8:15
     .replace(/(\d{1,2})(am|pm)/g, "$1:00 $2");    // 8am -> 8:00 am
 
-  // Normalise each slot time for comparison
-  const normaliseSlot = (t: string) =>
-    t.toLowerCase().replace(/\s/g, "").replace(/^(\d):/, "0$1:");
+  // Normalise slot time to bare "HH:MM" for comparison
+  // "8:15 AM" -> "8:15", "10:00 AM" -> "10:00"
+  const normaliseSlotTime = (t: string): string => {
+    const m = t.match(/(\d{1,2}):(\d{2})/);
+    if (!m) return t.toLowerCase().replace(/\s/g, "");
+    return `${m[1]}:${m[2]}`;
+  };
+
+  // Also normalise input to bare "HH:MM"
+  const inputTime = normalised.match(/(\d{1,2}):(\d{2})/)?.[0] ?? null;
 
   for (const slot of offeredSlots) {
-    const slotNorm  = normaliseSlot(slot.time);
-    const timeLower = slot.time.toLowerCase();
-    const timeClean = timeLower.replace(/\s/g, "");
+    const slotTime  = normaliseSlotTime(slot.time); // e.g. "8:15"
     const dateLower = slot.date.toLowerCase();
 
-    // Check normalised input against normalised slot
-    const normClean = normalised.replace(/\s/g, "");
-
     if (
-      normalised.includes(slotNorm)  ||
-      normClean.includes(timeClean)  ||
-      lower.includes(timeLower)      ||
+      // Direct time match after normalisation — "8.15" matches "8:15 AM"
+      (inputTime && inputTime === slotTime)  ||
+      lower.includes(slot.time.toLowerCase()) ||
       lower.includes(dateLower)
     ) {
       return slot;
