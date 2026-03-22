@@ -121,6 +121,7 @@ export async function POST(req: NextRequest) {
 
     // ── BOOKING DETECTION ─────────────────────────
     let bookingTriggered = false;
+    let bookingIncompleteOverride: string[] | null = null;
     const isConfirmation = isBookingConfirmation(reply);
     const alreadyBooked  = sessionId ? await hasSessionBooked(sessionId) : true;
 
@@ -192,12 +193,23 @@ export async function POST(req: NextRequest) {
           console.error("[Booking failed]", err);
         }
       } else {
+        // Booking confirmation detected but we're missing data
+        // Figure out what's missing and override the reply
+        const missing = [];
+        if (!selectedSlot)  missing.push("which time slot they selected");
+        if (!patientName)   missing.push("the patient name");
+        if (!patientPhone)  missing.push("a valid phone number (needs 10+ digits)");
+
         console.log(
           `[Booking incomplete] ` +
           `slot: ${selectedSlot ? "✓" : "✗"} ` +
           `name: ${patientName ? "✓" : "✗"} ` +
           `phone: ${patientPhone ? "✓" : "✗"}`
         );
+
+        // Override the reply — don't let the bot falsely confirm a booking
+        // that didn't actually happen
+        bookingIncompleteOverride = missing;
       }
     }
 
@@ -251,8 +263,22 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // If booking was detected but incomplete, override the bot reply
+    // so it doesn't falsely confirm a booking that didn't happen
+    let finalReply = reply;
+    if (bookingIncompleteOverride && bookingIncompleteOverride.length > 0) {
+      const missing = bookingIncompleteOverride;
+      if (missing.includes("a valid phone number (needs 10+ digits)")) {
+        finalReply = `Sorry, that phone number doesn't look right — it needs at least 10 digits. Could you double-check it for me?`;
+      } else if (missing.includes("the patient name")) {
+        finalReply = `I just need your name to complete the booking. What should I put it under?`;
+      } else {
+        finalReply = `Just to confirm — which time were you looking to book?`;
+      }
+    }
+
     return NextResponse.json({
-      reply,
+      reply:        finalReply,
       urgency,
       booked:       bookingTriggered,
       offeredSlots: currentSlots,
