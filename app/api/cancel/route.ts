@@ -3,18 +3,9 @@ import { getClientConfig } from "@/lib/getClientConfig";
 import { cancelAppointment } from "@/lib/googleCalendar";
 import { sendSMS } from "@/lib/sms";
 
-// ================================================
-// CANCEL APPOINTMENT ROUTE
-// ------------------------------------------------
-// Called when the bot detects a cancellation intent
-// and has confirmed the patient's name.
-// Deletes the event from Google Calendar and sends
-// a cancellation confirmation SMS.
-// ================================================
-
 export async function POST(req: NextRequest) {
   try {
-    const { clientId, patientName, patientPhone, isoStart } = await req.json();
+    const { clientId, patientName, patientPhone, appointmentTime } = await req.json();
 
     if (!clientId || !patientName) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -25,19 +16,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Client not found" }, { status: 404 });
     }
 
-    // Delete from Google Calendar
+    // Cancel with both name and time for precise matching
     const cancelled = await cancelAppointment({
       config,
       patientName,
-      isoStart,
+      appointmentTime, // e.g. "9am", "9:00 AM"
     });
 
-    // Send cancellation SMS to patient
+    // Send cancellation SMS
     if (cancelled && patientPhone) {
+      const timeStr = appointmentTime ? ` at ${appointmentTime}` : "";
       await sendSMS(
         patientPhone,
-        `Hi ${patientName}, your appointment at ${config.name} has been cancelled. ` +
-        `If you'd like to rebook, visit our website or call us on ${config.phone}. Reply STOP to opt out.`
+        `Hi ${patientName}, your appointment${timeStr} at ${config.name} has been cancelled. ` +
+        `To rebook, call us on ${config.phone}. Reply STOP to opt out.`
       );
     }
 

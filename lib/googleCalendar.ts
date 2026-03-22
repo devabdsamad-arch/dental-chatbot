@@ -200,9 +200,10 @@ export async function bookAppointment(params: {
 // CANCEL APPOINTMENT
 // ================================================
 export async function cancelAppointment(params: {
-  config:      ClientConfig;
-  patientName: string;
-  isoStart?:   string;
+  config:          ClientConfig;
+  patientName:     string;
+  appointmentTime?: string; // e.g. "9am", "9:00 AM" — used for precise matching
+  isoStart?:       string;
 }): Promise<boolean> {
 
   if (!params.config.googleCalendarId) return false;
@@ -217,20 +218,41 @@ export async function cancelAppointment(params: {
       calendarId,
       timeMin:      params.isoStart ?? now.toISOString(),
       timeMax:      future.toISOString(),
-      q:            params.patientName,
+      q:            params.patientName, // search by name
       singleEvents: true,
       orderBy:      "startTime",
     });
 
     const events = eventsRes.data.items ?? [];
-    const match  = events.find(e =>
+
+    // Match on name first
+    const nameMatches = events.filter(e =>
       e.summary?.toLowerCase().includes(params.patientName.toLowerCase())
     );
 
-    if (!match?.id) {
+    if (nameMatches.length === 0) {
       console.log(`[Cancel] No event found for ${params.patientName}`);
       return false;
     }
+
+    let match = nameMatches[0]; // default to first match
+
+    // If we have a time, use it to narrow down to the exact appointment
+    if (params.appointmentTime && nameMatches.length > 1) {
+      const timeHour = params.appointmentTime.match(/(\d{1,2})/)?.[1];
+      if (timeHour) {
+        const precise = nameMatches.find(e => {
+          const startTime = e.start?.dateTime;
+          if (!startTime) return false;
+          const eventHour = new Date(startTime).getHours();
+          return String(eventHour) === timeHour ||
+                 String(eventHour % 12 || 12) === timeHour;
+        });
+        if (precise) match = precise;
+      }
+    }
+
+    if (!match?.id) return false;
 
     await calendar.events.delete({ calendarId, eventId: match.id });
     console.log(`[Cancel] Deleted: ${match.summary}`);

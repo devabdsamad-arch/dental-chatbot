@@ -177,14 +177,22 @@ export async function POST(req: NextRequest) {
     }
 
     // ── CANCELLATION DETECTION ───────────────────
-    // Detect when bot confirms a cancellation so we
-    // can delete the event from Google Calendar
     const isCancellationConfirmation =
-      /cancel(l?ed|ling)|appointment.*removed|removed.*appointment|no longer.*booked|taken.*off/i.test(reply);
+      /cancel(l?ed|ling)|appointment.*cancelled|cancelled.*appointment/i.test(reply);
 
     if (sessionId && isCancellationConfirmation && !bookingTriggered) {
       const patientName  = extractPatientName(messages);
       const patientPhone = extractPhone(messages);
+
+      // Extract appointment time from conversation
+      // Look for time mentions in all messages
+      const allText = [...messages]
+        .map((m: any) => m.content)
+        .join(" ");
+      const timeMatch = allText.match(
+        /(\d{1,2}(?::\d{2})?\s*(?:am|pm))/i
+      );
+      const extractedTime = timeMatch?.[0] ?? undefined;
 
       if (patientName) {
         try {
@@ -196,9 +204,10 @@ export async function POST(req: NextRequest) {
               clientId,
               patientName,
               patientPhone,
+              appointmentTime: extractedTime,
             }),
           });
-          console.log(`[Cancel] Fired for ${patientName} at ${config.name}`);
+          console.log(`[Cancel] ${patientName}, ${extractedTime ?? "time unknown"} at ${config.name}`);
         } catch (err) {
           console.error("[Cancel] Failed:", err);
         }
