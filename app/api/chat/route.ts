@@ -16,6 +16,7 @@ import {
   findMatchingSlot,
   getClosestSlots,
 } from "@/lib/slotValidator";
+import { sendLeadNotification } from "@/lib/email";
 
 const bookedSessions = new Set<string>();
 

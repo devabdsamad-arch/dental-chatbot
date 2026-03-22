@@ -28,6 +28,7 @@ export interface Lead {
   clientId: string;      // which dental clinic
   name: string;
   phone: string;
+  contactEmail?: string;  // clinic owner — receives notifications
   email?: string;
   issue: string;         // what they came in for
   urgency: "routine" | "soon" | "emergency";
@@ -65,6 +66,7 @@ export interface ClientConfig {
   name: string;
   location: string;
   phone: string;
+  contactEmail?: string;  // clinic owner — receives notifications
   hours: string;
   bookingUrl?: string;
   googleCalendarId?: string;

@@ -3,6 +3,7 @@ import { getClientConfig } from "@/lib/getClientConfig";
 import { bookAppointment } from "@/lib/googleCalendar";
 import { saveSessionStat, scheduleReminder } from "@/lib/db";
 import { sendBookingConfirmation } from "@/lib/sms";
+import { sendBookingNotification } from "@/lib/email";
 import { parseISO, subHours, addHours, format } from "date-fns";
 
 export async function POST(req: NextRequest) {
@@ -46,7 +47,7 @@ export async function POST(req: NextRequest) {
       isoEnd,
     });
 
-    // 2. Send immediate SMS confirmation
+    // 2. Send immediate SMS confirmation to patient
     await sendBookingConfirmation({
       to:          patientPhone,
       patientName,
@@ -56,6 +57,19 @@ export async function POST(req: NextRequest) {
       date:        dateLabel,
       time:        timeLabel,
     });
+
+    // 2b. Send email notification to clinic owner
+    if (config.contactEmail) {
+      await sendBookingNotification({
+        to:           config.contactEmail,
+        clinicName:   config.name,
+        patientName,
+        patientPhone,
+        service,
+        date:         dateLabel,
+        time:         timeLabel,
+      });
+    }
 
     // 3. Schedule 24hr reminder
     const reminderTime = subHours(appointmentStart, 24);

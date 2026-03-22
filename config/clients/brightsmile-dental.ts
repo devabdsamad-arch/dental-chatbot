@@ -5,20 +5,10 @@ const brightsmile: ClientConfig = {
   name: "BrightSmile Dental Clinic",
   location: "Level 2, 120 Collins St, Melbourne VIC 3000",
   phone: "(03) 9123 4567",
+  contactEmail: "rachel@brightsmile.com.au", // ⚠️ clinic owner email — receives booking + lead notifications
   hours: "Monday–Friday 8am–6pm, Saturday 9am–2pm, closed Sunday",
   bookingUrl: "https://brightsmile.com.au/book",
   timezone: "Australia/Melbourne",
-  googleCalendarId: "dev.abdsamad@gmail.com",
-workingHours: {
-  monday:    { open: "08:00", close: "18:00" },
-  tuesday:   { open: "08:00", close: "18:00" },
-  wednesday: { open: "08:00", close: "18:00" },
-  thursday:  { open: "08:00", close: "18:00" },
-  friday:    { open: "08:00", close: "18:00" },
-  saturday:  { open: "09:00", close: "14:00" },
-  sunday:    null, // closed
-},
-appointmentDuration: 60, // minutes — default slot length
   services: [
     "general checkup",
     "teeth cleaning",
@@ -55,7 +45,6 @@ appointmentDuration: 60, // minutes — default slot length
     "I have a toothache",
   ],
   active: true,
-  
 };
 
 export default brightsmile;
