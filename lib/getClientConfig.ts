@@ -1,5 +1,6 @@
 import { ClientConfig } from "@/types";
 import brightsmile from "@/config/clients/brightsmile-dental";
+import sydneySmiles from "@/config/clients/sydney-smiles";
 
 // ================================================
 // CLIENT REGISTRY
@@ -11,7 +12,7 @@ import brightsmile from "@/config/clients/brightsmile-dental";
 
 const clients: Record<string, ClientConfig> = {
   "brightsmile-dental": brightsmile,
-
+  "sydney-smiles": sydneySmiles,
   // Add more clients here as you onboard them:
   // "sydney-smiles": sydneySmiles,
   // "london-dental": londonDental,
