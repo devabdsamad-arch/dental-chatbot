@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getClientConfig } from "@/lib/getClientConfig";
-import { bookAppointment } from "@/lib/googleCalendar";
+import { bookAppointment, getServiceDuration } from "@/lib/googleCalendar";
+import { addMinutes, parseISO } from "date-fns";
 import { saveSessionStat, scheduleReminder } from "@/lib/db";
 import { sendBookingConfirmation } from "@/lib/sms";
 import { sendBookingNotification } from "@/lib/email";
-import { parseISO, subHours, addHours, format } from "date-fns";
+import { subHours, addHours, format } from "date-fns";
 
 export async function POST(req: NextRequest) {
   try {
@@ -34,17 +35,23 @@ export async function POST(req: NextRequest) {
     }
 
     const appointmentStart = parseISO(isoStart);
-    const dateLabel        = format(appointmentStart, "EEEE d MMM");
-    const timeLabel        = format(appointmentStart, "h:mm a");
+    const dateLabel         = format(appointmentStart, "EEEE d MMM");
+    const timeLabel         = format(appointmentStart, "h:mm a");
 
-    // 1. Create Google Calendar event
+    // Use correct duration for this specific service
+    const serviceDuration   = getServiceDuration(config, service);
+    const correctedEnd      = addMinutes(appointmentStart, serviceDuration).toISOString();
+
+    console.log(`[Book] Service: ${service}, Duration: ${serviceDuration} mins`);
+
+    // 1. Create Google Calendar event with correct duration
     const calResult = await bookAppointment({
       config,
       patientName,
       patientPhone,
       service,
       isoStart,
-      isoEnd,
+      isoEnd: correctedEnd, // use service-specific end time
     });
 
     // 2. Send immediate SMS confirmation to patient
@@ -90,7 +97,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 4. Schedule post-visit review request (2hrs after appointment ends)
-    const reviewTime = addHours(parseISO(isoEnd), 2);
+    const reviewTime = addHours(parseISO(correctedEnd), 2);
     await scheduleReminder({
       clientId,
       phone:  patientPhone,
