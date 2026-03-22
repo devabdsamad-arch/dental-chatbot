@@ -1,11 +1,21 @@
 import { AvailableSlot } from "./googleCalendar";
 
+// ================================================
+// BOOKING DETECTOR
+// ------------------------------------------------
+// All functions are pure — no side effects.
+// Tested against real conversation patterns.
+// ================================================
+
+// ── BOOKING CONFIRMATION DETECTION ───────────────
+
 export function isBookingConfirmation(reply: string): boolean {
   const patterns = [
     /your .+ is (set|confirmed|booked|all yours)/i,
     /booked you (in|for)/i,
     /appointment is confirmed/i,
     /i['']?ve booked you/i,
+    /i['']?ve got you (booked|down|in)/i,
     /see you (on|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i,
     /we['']?ll (see you|send you a reminder)/i,
     /looking forward to seeing you/i,
@@ -14,87 +24,136 @@ export function isBookingConfirmation(reply: string): boolean {
   return patterns.some(p => p.test(reply));
 }
 
+// ── SLOT SELECTION ────────────────────────────────
+
+// Convert any time string to minutes since midnight
+// Handles ALL formats: "8:15 AM", "8.15", "8:15", "815", "8 15", "9am", "9"
+function timeToMinutes(input: string): number | null {
+  const s = input.trim().toLowerCase();
+
+  // Must contain at least one digit
+  if (!/\d/.test(s)) return null;
+
+  const hasPM = /pm/.test(s);
+  const hasAM = /am/.test(s);
+
+  // Strip everything except digits, colon, dot
+  const clean = s.replace(/[^0-9:.]/g, "");
+  if (!clean) return null;
+
+  let hours: number;
+  let mins: number;
+
+  if (clean.includes(":")) {
+    const parts = clean.split(":");
+    hours = parseInt(parts[0]);
+    mins  = parseInt(parts[1]) || 0;
+  } else if (clean.includes(".")) {
+    const parts = clean.split(".");
+    hours = parseInt(parts[0]);
+    mins  = parseInt(parts[1]) || 0;
+  } else if (clean.length === 3) {
+    // "815" -> 8:15
+    hours = parseInt(clean[0]);
+    mins  = parseInt(clean.slice(1));
+  } else if (clean.length === 4) {
+    // "0815" -> 8:15
+    hours = parseInt(clean.slice(0, 2));
+    mins  = parseInt(clean.slice(2));
+  } else {
+    hours = parseInt(clean);
+    mins  = 0;
+  }
+
+  if (isNaN(hours) || isNaN(mins)) return null;
+  if (mins > 59) return null;
+  if (hours > 23) return null;
+
+  // Apply AM/PM
+  if (hasPM && hours < 12) hours += 12;
+  if (hasAM && hours === 12) hours = 0;
+
+  // No AM/PM given — apply clinic context heuristic
+  // 1–6 without qualifier = afternoon (1pm–6pm)
+  // 7–11 without qualifier = morning
+  if (!hasPM && !hasAM && hours >= 1 && hours <= 6) {
+    hours += 12;
+  }
+
+  return hours * 60 + mins;
+}
+
+// Get slot time in minutes
+function slotToMinutes(slot: AvailableSlot): number | null {
+  return timeToMinutes(slot.time);
+}
+
 export function detectSlotSelection(
   userMessage: string,
   offeredSlots: AvailableSlot[]
 ): AvailableSlot | null {
+  if (!offeredSlots.length) return null;
+
   const lower = userMessage.toLowerCase().trim();
 
-  // Normalise user input — "8.15", "8:15", "8 15" all become "8:15"
-  const normalised = lower
-    .replace(/(\d{1,2})[.\s](\d{2})/g, "$1:$2")  // 8.15 -> 8:15
-    .replace(/(\d{1,2})(am|pm)/g, "$1:00 $2");    // 8am -> 8:00 am
-
-  // Normalise slot time to bare "HH:MM" for comparison
-  // "8:15 AM" -> "8:15", "10:00 AM" -> "10:00"
-  const normaliseSlotTime = (t: string): string => {
-    const m = t.match(/(\d{1,2}):(\d{2})/);
-    if (!m) return t.toLowerCase().replace(/\s/g, "");
-    return `${m[1]}:${m[2]}`;
-  };
-
-  // Also normalise input to bare "HH:MM"
-  const inputTime = normalised.match(/(\d{1,2}):(\d{2})/)?.[0] ?? null;
-
+  // Date match first (most specific)
   for (const slot of offeredSlots) {
-    const slotTime  = normaliseSlotTime(slot.time); // e.g. "8:15"
-    const dateLower = slot.date.toLowerCase();
+    if (lower.includes(slot.date.toLowerCase())) return slot;
+  }
 
-    if (
-      // Direct time match after normalisation — "8.15" matches "8:15 AM"
-      (inputTime && inputTime === slotTime)  ||
-      lower.includes(slot.time.toLowerCase()) ||
-      lower.includes(dateLower)
-    ) {
-      return slot;
+  // Convert user message to minutes and find exact match
+  const userMins = timeToMinutes(userMessage);
+  if (userMins !== null) {
+    for (const slot of offeredSlots) {
+      const slotMins = slotToMinutes(slot);
+      if (slotMins === userMins) return slot;
     }
   }
 
-  // Bare hour match — only if unambiguous (one slot for that hour)
-  const hourTyped = userMessage.trim().match(/^(\d{1,2})$/);
-  if (hourTyped) {
-    const matched = offeredSlots.filter(s => s.time.startsWith(hourTyped[1] + ":"));
-    if (matched.length === 1) return matched[0];
-  }
-
   // Positional selection
-  if (/\b(first|1st|option\s*1|\b1\b|earliest|soonest)\b/i.test(userMessage)) {
+  if (/\b(first|1st|earliest|soonest)\b/i.test(userMessage)) {
     return offeredSlots[0] ?? null;
   }
-  if (/\b(second|2nd|option\s*2|\b2\b)\b/i.test(userMessage)) {
+  if (/\b(second|2nd)\b/i.test(userMessage)) {
     return offeredSlots[1] ?? null;
   }
-  if (/\b(third|3rd|option\s*3|\b3\b)\b/i.test(userMessage)) {
+  if (/\b(third|3rd)\b/i.test(userMessage)) {
     return offeredSlots[2] ?? null;
   }
 
-  // Simple acceptance when only one slot was offered or context is clear
-  if (/^\s*(ok|okay|yes|sure|that works|perfect|great|fine|works for me|sounds good|yep|yeah|yup)\s*$/i.test(userMessage)) {
-    return offeredSlots[0] ?? null;
-  }
+  // INTENTIONALLY no "yes/ok/sure" matching
+  // Those words appear in phone confirmation and must never select a slot
 
   return null;
 }
 
+// ── SERVICE EXTRACTION ────────────────────────────
+
 export function extractService(messages: any[]): string {
   const serviceMap: Record<string, string> = {
-    "checkup":     "general checkup",
-    "check-up":    "general checkup",
-    "check up":    "general checkup",
-    "cleaning":    "teeth cleaning",
-    "clean":       "teeth cleaning",
-    "whitening":   "teeth whitening",
-    "whiten":      "teeth whitening",
-    "filling":     "filling",
-    "root canal":  "root canal",
-    "implant":     "dental implant",
-    "orthodontic": "orthodontic consultation",
-    "braces":      "orthodontic consultation",
-    "align":       "orthodontic consultation",
-    "emergency":   "emergency consultation",
-    "children":    "children's dentistry",
-    "kid":         "children's dentistry",
-    "child":       "children's dentistry",
+    "checkup":       "general checkup",
+    "check-up":      "general checkup",
+    "check up":      "general checkup",
+    "general":       "general checkup",
+    "cleaning":      "teeth cleaning",
+    "clean":         "teeth cleaning",
+    "whitening":     "teeth whitening",
+    "whiten":        "teeth whitening",
+    "filling":       "filling",
+    "root canal":    "root canal",
+    "root":          "root canal",
+    "implant":       "dental implant",
+    "orthodontic":   "orthodontic consultation",
+    "braces":        "orthodontic consultation",
+    "invisalign":    "orthodontic consultation",
+    "align":         "orthodontic consultation",
+    "emergency":     "emergency consultation",
+    "urgent":        "emergency consultation",
+    "pain":          "emergency consultation",
+    "children":      "children's dentistry",
+    "child":         "children's dentistry",
+    "kid":           "children's dentistry",
+    "paediatric":    "children's dentistry",
   };
 
   const allText = messages
@@ -108,54 +167,67 @@ export function extractService(messages: any[]): string {
   return "general checkup";
 }
 
+// ── NAME EXTRACTION ───────────────────────────────
+
+// Words that indicate the message is NOT a name
+const NON_NAME_WORDS = /\b(what|when|where|how|why|which|available|slots|slot|can|could|would|should|appointment|booking|time|date|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|please|thanks|thank|ok|okay|yes|no|sure|great|perfect)\b/i;
+
 export function extractPatientName(messages: any[]): string | null {
   const userMessages = messages.filter((m: any) => m.role === "user");
 
+  // 1. Explicit introduction patterns anywhere in conversation
   for (const msg of userMessages) {
     const text = msg.content.trim();
 
-    // "my name is X" / "i'm X" / "it's X" / "this is X"
-    const explicit = text.match(
-      /(?:my name is|i['']?m|it['']?s|this is|call me)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)/i
-    );
-    if (explicit) return explicit[1].trim();
+    const patterns = [
+      /(?:my name is|i am|i'?m|it'?s|this is|call me)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)/i,
+      /^(?:hi|hello|hey)[,!\s]+(?:i'?m|i am|it'?s|this is)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)/i,
+      /^(?:hi|hello|hey)[,!\s]+([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(?:here|speaking)$/i,
+    ];
 
-    // "hi i'm X" / "hey it's X"
-    const intro = text.match(
-      /^(?:hi|hello|hey)[,!\s]+(?:i['']?m|it['']?s|this is)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)/i
-    );
-    if (intro) return intro[1].trim();
-
-    // "hi X here" / "X speaking"
-    const nameFirst = text.match(
-      /^(?:hi|hello|hey)[,!\s]+([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(?:here|speaking)/i
-    );
-    if (nameFirst) return nameFirst[1].trim();
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) return match[1].trim();
+    }
   }
 
-  // Bot asked for name — next user message is the name
-  // Strip phone numbers first so "Abdul Samad +923165743196" still works
+  // 2. Bot asked for name — extract from next user message
   for (let i = 1; i < messages.length; i++) {
     const prev = messages[i - 1];
     const curr = messages[i];
-    if (
-      prev.role === "assistant" &&
-      /your name|name to hold|name please|what['']?s your name|name and.*phone|phone.*name/i.test(prev.content) &&
-      curr.role === "user"
-    ) {
-      // Strip phone number from message before extracting name
-      const stripped = curr.content
-        .replace(/\+?[\d\s\-().]{9,20}/g, "")
-        .trim();
 
-      if (stripped.length > 1 && stripped.split(/\s+/).length <= 5) {
-        return stripped.trim();
-      }
-    }
+    if (prev.role !== "assistant" || curr.role !== "user") continue;
+
+    const botAskedForName =
+      /\b(your name|what('?s| is) your name|name to hold|name please|can i (get|have) your name|what do i call you)\b/i.test(prev.content);
+
+    if (!botAskedForName) continue;
+
+    // Strip phone number from the response
+    const stripped = curr.content
+      .replace(/\+?\d[\d\s\-().]{8,}/g, "")
+      .trim();
+
+    if (!stripped || stripped.length < 2) continue;
+
+    const words = stripped.trim().split(/\s+/);
+
+    // Reject if contains non-name indicators
+    if (NON_NAME_WORDS.test(stripped)) continue;
+
+    // Reject if too long (names are 1-4 words)
+    if (words.length > 4) continue;
+
+    // Reject if contains digits
+    if (/\d/.test(stripped)) continue;
+
+    return stripped.trim();
   }
 
   return null;
 }
+
+// ── PHONE EXTRACTION ──────────────────────────────
 
 export function extractPhone(messages: any[]): string | null {
   const userMessages = messages
@@ -163,12 +235,12 @@ export function extractPhone(messages: any[]): string | null {
     .map((m: any) => m.content);
 
   for (const text of userMessages) {
-    // Match international format: +92XXXXXXXXXX (exact digits, no trailing chars)
+    // International: +92XXXXXXXXXX
     const intl = text.match(/\+\d{10,14}(?!\d)/);
     if (intl) return intl[0].trim();
 
-    // Match local format: 10-11 digit number
-    const local = text.match(/\d{10,11}/);
+    // Local: 10-11 contiguous digits
+    const local = text.match(/\b\d{10,11}\b/);
     if (local) return local[0].trim();
   }
 

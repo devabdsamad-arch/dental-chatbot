@@ -129,7 +129,15 @@ export async function POST(req: NextRequest) {
       let selectedSlot: AvailableSlot | null = null;
 
       console.log(`[Debug] currentSlots: ${currentSlots.map(s => s.time).join(", ")}`);
-      for (const msg of [...messages].reverse().filter((m: any) => m.role === "user")) {
+
+      // Only check messages that actually contain a time reference
+      // Skip pure confirmation words like "yes", "ok", "sure"
+      const timeMessages = [...messages]
+        .reverse()
+        .filter((m: any) => m.role === "user")
+        .filter((m: any) => /\d/.test(m.content) || /first|second|third|earliest|latest/i.test(m.content));
+
+      for (const msg of timeMessages) {
         const found = detectSlotSelection(msg.content, currentSlots);
         console.log(`[Debug] checking msg: "${msg.content}" -> ${found?.time ?? "no match"}`);
         if (found) { selectedSlot = found; break; }
