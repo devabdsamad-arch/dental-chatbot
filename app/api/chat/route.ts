@@ -122,8 +122,11 @@ export async function POST(req: NextRequest) {
     // ── BOOKING DETECTION ─────────────────────────
     let bookingTriggered = false;
     const isConfirmation = isBookingConfirmation(reply);
+    const alreadyBooked  = sessionId ? await hasSessionBooked(sessionId) : true;
 
-    const alreadyBooked = sessionId ? await hasSessionBooked(sessionId) : true;
+    // Always log so we can trace every booking attempt
+    console.log(`[Detect] reply: "${reply.slice(0, 100)}"`);
+    console.log(`[Detect] isConfirmation=${isConfirmation} | slots=${currentSlots.length} | alreadyBooked=${alreadyBooked} | sessionId=${!!sessionId}`);
 
     if (sessionId && isConfirmation && currentSlots.length > 0 && !alreadyBooked) {
       let selectedSlot: AvailableSlot | null = null;
