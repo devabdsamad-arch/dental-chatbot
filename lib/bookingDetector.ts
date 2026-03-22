@@ -132,18 +132,23 @@ export function extractPatientName(messages: any[]): string | null {
   }
 
   // Bot asked for name — next user message is the name
+  // Strip phone numbers first so "Abdul Samad +923165743196" still works
   for (let i = 1; i < messages.length; i++) {
     const prev = messages[i - 1];
     const curr = messages[i];
     if (
       prev.role === "assistant" &&
-      /your name|name to hold|name please|what['']?s your name/i.test(prev.content) &&
-      curr.role === "user" &&
-      curr.content.trim().split(/\s+/).length <= 5 &&
-      !/\d/.test(curr.content) &&
-      curr.content.trim().length > 1
+      /your name|name to hold|name please|what['']?s your name|name and.*phone|phone.*name/i.test(prev.content) &&
+      curr.role === "user"
     ) {
-      return curr.content.trim();
+      // Strip phone number from message before extracting name
+      const stripped = curr.content
+        .replace(/\+?[\d\s\-().]{9,20}/g, "")
+        .trim();
+
+      if (stripped.length > 1 && stripped.split(/\s+/).length <= 5) {
+        return stripped.trim();
+      }
     }
   }
 
