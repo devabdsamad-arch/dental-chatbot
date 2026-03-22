@@ -172,10 +172,19 @@ export function extractPatientName(messages: any[]): string | null {
 }
 
 export function extractPhone(messages: any[]): string | null {
-  for (const text of messages.filter((m: any) => m.role === "user").map((m: any) => m.content)) {
+  // Scan in REVERSE — always use the most recently given valid number.
+  // Handles the case where a patient corrects a wrong number mid-conversation.
+  const userTexts = messages
+    .filter((m: any) => m.role === "user")
+    .map((m: any) => m.content)
+    .reverse();
+
+  for (const text of userTexts) {
+    // International: +XX followed by 10-14 digits
     const intl = text.match(/\+\d{10,14}(?!\d)/);
     if (intl) return intl[0].trim();
 
+    // Local: exactly 10-11 contiguous digits
     const local = text.match(/\b\d{10,11}\b/);
     if (local) return local[0].trim();
   }
