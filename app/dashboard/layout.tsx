@@ -1,12 +1,17 @@
 import Link from "next/link";
-import { LayoutDashboard, Users, Settings, LogOut, MessageSquare } from "lucide-react";
+import { redirect } from "next/navigation";
+import { auth, signOut } from "@/auth";
+import { LayoutDashboard, Users, Settings, LogOut } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard",         icon: LayoutDashboard, label: "Overview" },
   { href: "/dashboard/clients", icon: Users,           label: "Clients"  },
 ];
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const session = await auth();
+  if (!session) redirect("/login");
+
   return (
     <div className="flex min-h-screen bg-[#f8f8f6]">
 
@@ -20,7 +25,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
             <div>
               <p className="text-white font-semibold text-sm">ChatFlow AI</p>
-              <p className="text-white/40 text-xs">Your dashboard</p>
+              <p className="text-white/40 text-xs">Admin Dashboard</p>
             </div>
           </div>
         </div>
@@ -39,17 +44,43 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           ))}
         </nav>
 
-        {/* Bottom */}
-        <div className="px-3 py-4 border-t border-white/10 space-y-1">
-          <Link href="/dashboard/clients" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-all duration-150 text-sm">
-            <Settings className="w-4 h-4" />
-            Settings
-          </Link>
-          <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-white/40 hover:text-white/60 transition-all duration-150 text-sm">
-            <LogOut className="w-4 h-4" />
-            Sign out
-          </button>
+        {/* User + sign out */}
+        <div className="px-3 py-4 border-t border-white/10">
+          {session.user && (
+            <div className="flex items-center gap-2.5 px-3 py-2 mb-1">
+              {session.user.image && (
+                <img
+                  src={session.user.image}
+                  alt="avatar"
+                  className="w-7 h-7 rounded-full"
+                />
+              )}
+              <div className="min-w-0">
+                <p className="text-white/80 text-xs font-medium truncate">
+                  {session.user.name}
+                </p>
+                <p className="text-white/30 text-[10px] truncate">
+                  {session.user.email}
+                </p>
+              </div>
+            </div>
+          )}
+          <form
+            action={async () => {
+              "use server";
+              await signOut({ redirectTo: "/login" });
+            }}
+          >
+            <button
+              type="submit"
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-white/40 hover:text-white/70 hover:bg-white/10 transition-all duration-150 text-sm"
+            >
+              <LogOut className="w-4 h-4" />
+              Sign out
+            </button>
+          </form>
         </div>
+
       </aside>
 
       <main className="flex-1 overflow-auto">

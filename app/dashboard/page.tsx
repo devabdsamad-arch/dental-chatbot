@@ -1,18 +1,45 @@
 import { mockClients, mockMRRData, mockUsageData, planConfig } from "@/lib/mock/data";
+import { getClientStats } from "@/lib/db";
 import { MRRChart } from "@/components/dashboard/RevenueChart";
 import { format } from "date-fns";
 import { DollarSign, Users, MessageSquare, TrendingUp, AlertCircle, Clock } from "lucide-react";
 
-export default function DashboardPage() {
-  const activeClients   = mockClients.filter(c => c.status === "active");
-  const trialClients    = mockClients.filter(c => c.status === "trial");
-  const suspendedClients = mockClients.filter(c => c.status === "suspended");
-  const totalMRR        = activeClients.reduce((sum, c) => sum + c.mrr, 0);
-  const totalConvos     = mockClients.reduce((sum, c) => sum + c.conversationsThisMonth, 0);
-  const notInstalled    = mockClients.filter(c => c.status !== "suspended" && !c.widgetInstalled);
+// ================================================
+// DASHBOARD OVERVIEW
+// ------------------------------------------------
+// Business metrics use mock data for now.
+// Per-client stats are pulled from real Supabase.
+// ================================================
 
-  // Clients whose billing is within 7 days
-  const billingSoon = mockClients.filter(c => {
+export default async function DashboardPage() {
+  const activeClients    = mockClients.filter(c => c.status === "active");
+  const trialClients     = mockClients.filter(c => c.status === "trial");
+  const suspendedClients = mockClients.filter(c => c.status === "suspended");
+  const totalMRR         = activeClients.reduce((sum, c) => sum + c.mrr, 0);
+
+  // Fetch real stats from Supabase for each active client
+  const clientStatsResults = await Promise.allSettled(
+    mockClients.map(async (client) => {
+      const stats = await getClientStats(client.id);
+      return { clientId: client.id, stats };
+    })
+  );
+
+  const clientStats: Record<string, any> = {};
+  clientStatsResults.forEach(result => {
+    if (result.status === "fulfilled") {
+      clientStats[result.value.clientId] = result.value.stats;
+    }
+  });
+
+  const totalRealConvos = Object.values(clientStats)
+    .reduce((sum: number, s: any) => sum + (s?.monthlySessions ?? 0), 0);
+
+  const totalRealBookings = Object.values(clientStats)
+    .reduce((sum: number, s: any) => sum + (s?.bookingsThisMonth ?? 0), 0);
+
+  const notInstalled = mockClients.filter(c => c.status !== "suspended" && !c.widgetInstalled);
+  const billingSoon  = mockClients.filter(c => {
     const days = Math.ceil((c.nextBillingDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
     return c.status === "active" && days <= 7;
   });
@@ -20,13 +47,12 @@ export default function DashboardPage() {
   return (
     <div className="p-8">
 
-      {/* Header */}
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-gray-900">Your business</h1>
         <p className="text-gray-500 text-sm mt-1">{format(new Date(), "EEEE, d MMMM yyyy")}</p>
       </div>
 
-      {/* ── TOP STAT CARDS ─────────────────────── */}
+      {/* ── STAT CARDS ─────────────────────────── */}
       <div className="grid grid-cols-4 gap-4 mb-8">
         <StatCard
           icon={<DollarSign className="w-5 h-5" />}
@@ -39,81 +65,75 @@ export default function DashboardPage() {
           icon={<Users className="w-5 h-5" />}
           label="Total clients"
           value={mockClients.length}
-          sub={`${trialClients.length} on trial · ${suspendedClients.length} suspended`}
+          sub={`${trialClients.length} trial · ${suspendedClients.length} suspended`}
           color="#3b82f6"
         />
         <StatCard
           icon={<MessageSquare className="w-5 h-5" />}
           label="Conversations this month"
-          value={totalConvos.toLocaleString()}
-          sub="across all clients"
+          value={totalRealConvos > 0 ? totalRealConvos.toLocaleString() : "—"}
+          sub="from Supabase"
           color="#7c3aed"
         />
         <StatCard
           icon={<TrendingUp className="w-5 h-5" />}
-          label="MRR growth"
-          value="+34%"
-          sub="vs last month"
+          label="Bookings this month"
+          value={totalRealBookings > 0 ? totalRealBookings : "—"}
+          sub="confirmed via chatbot"
           color="#f59e0b"
         />
       </div>
 
-      {/* ── CHARTS ROW ─────────────────────────── */}
+      {/* ── CHARTS ─────────────────────────────── */}
       <div className="grid grid-cols-2 gap-6 mb-6">
         <div className="bg-white rounded-2xl p-6 border border-gray-100">
           <h2 className="font-semibold text-gray-900 mb-1">MRR growth</h2>
-          <p className="text-xs text-gray-400 mb-5">Your monthly recurring revenue over time</p>
+          <p className="text-xs text-gray-400 mb-5">Monthly recurring revenue</p>
           <MRRChart data={mockMRRData} color="#2a7a5a" dataKey="mrr" prefix="$" />
         </div>
         <div className="bg-white rounded-2xl p-6 border border-gray-100">
-          <h2 className="font-semibold text-gray-900 mb-1">Total conversations</h2>
-          <p className="text-xs text-gray-400 mb-5">Chatbot conversations across all your clients</p>
+          <h2 className="font-semibold text-gray-900 mb-1">Conversations</h2>
+          <p className="text-xs text-gray-400 mb-5">Across all clients</p>
           <MRRChart data={mockUsageData} color="#7c3aed" dataKey="conversations" />
         </div>
       </div>
 
-      {/* ── ALERTS ROW ─────────────────────────── */}
-      <div className="grid grid-cols-2 gap-6 mb-6">
-
-        {/* Clients not installed */}
-        {notInstalled.length > 0 && (
-          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <AlertCircle className="w-4 h-4 text-amber-600" />
-              <h3 className="font-semibold text-amber-800 text-sm">Widget not installed</h3>
-            </div>
-            <div className="space-y-2">
+      {/* ── ALERTS ─────────────────────────────── */}
+      {(notInstalled.length > 0 || billingSoon.length > 0) && (
+        <div className="grid grid-cols-2 gap-6 mb-6">
+          {notInstalled.length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <AlertCircle className="w-4 h-4 text-amber-600" />
+                <h3 className="font-semibold text-amber-800 text-sm">Widget not installed</h3>
+              </div>
               {notInstalled.map(c => (
-                <div key={c.id} className="flex items-center justify-between text-sm">
+                <div key={c.id} className="flex justify-between text-sm mb-1">
                   <span className="text-amber-700">{c.clinicName}</span>
                   <span className="text-amber-500 text-xs">{c.contactEmail}</span>
                 </div>
               ))}
+              <p className="text-xs text-amber-600 mt-2">Follow up — not live yet</p>
             </div>
-            <p className="text-xs text-amber-600 mt-3">Follow up — they haven't gone live yet</p>
-          </div>
-        )}
-
-        {/* Billing soon */}
-        {billingSoon.length > 0 && (
-          <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <Clock className="w-4 h-4 text-blue-600" />
-              <h3 className="font-semibold text-blue-800 text-sm">Billing due soon</h3>
-            </div>
-            <div className="space-y-2">
+          )}
+          {billingSoon.length > 0 && (
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Clock className="w-4 h-4 text-blue-600" />
+                <h3 className="font-semibold text-blue-800 text-sm">Billing due soon</h3>
+              </div>
               {billingSoon.map(c => (
-                <div key={c.id} className="flex items-center justify-between text-sm">
+                <div key={c.id} className="flex justify-between text-sm mb-1">
                   <span className="text-blue-700">{c.clinicName}</span>
                   <span className="text-blue-500 text-xs">{format(c.nextBillingDate, "d MMM")}</span>
                 </div>
               ))}
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
-      {/* ── CLIENT TABLE ───────────────────────── */}
+      {/* ── CLIENT TABLE WITH REAL STATS ─────────── */}
       <div className="bg-white rounded-2xl border border-gray-100">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <h2 className="font-semibold text-gray-900">All clients</h2>
@@ -123,24 +143,19 @@ export default function DashboardPage() {
         </div>
         <div className="divide-y divide-gray-50">
           {mockClients.map(client => {
-            const plan = planConfig[client.plan];
-            const growth = client.conversationsLastMonth > 0
-              ? Math.round(((client.conversationsThisMonth - client.conversationsLastMonth) / client.conversationsLastMonth) * 100)
-              : null;
+            const plan  = planConfig[client.plan];
+            const stats = clientStats[client.id];
 
             return (
               <div key={client.id} className="flex items-center gap-4 px-6 py-4">
-
-                {/* Clinic */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-medium text-gray-900">{client.clinicName}</p>
                     <span className="text-[10px] text-gray-400">{client.city}, {client.country}</span>
                   </div>
-                  <p className="text-xs text-gray-400 mt-0.5">{client.contactName} · {client.contactEmail}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{client.contactEmail}</p>
                 </div>
 
-                {/* Plan */}
                 <span
                   className="text-xs font-medium px-2.5 py-1 rounded-full"
                   style={{ backgroundColor: `${plan.color}15`, color: plan.color }}
@@ -148,19 +163,17 @@ export default function DashboardPage() {
                   {plan.label} · ${plan.price}/mo
                 </span>
 
-                {/* Conversations */}
-                <div className="text-right w-28">
-                  <p className="text-sm font-medium text-gray-900">{client.conversationsThisMonth} convos</p>
-                  {growth !== null && (
-                    <p className={`text-xs ${growth >= 0 ? "text-green-600" : "text-red-500"}`}>
-                      {growth >= 0 ? "+" : ""}{growth}% vs last month
-                    </p>
-                  )}
+                {/* Real stats from Supabase */}
+                <div className="text-right w-36">
+                  <p className="text-sm font-medium text-gray-900">
+                    {stats ? `${stats.monthlySessions} sessions` : "No data yet"}
+                  </p>
+                  <p className="text-xs text-gray-400">
+                    {stats ? `${stats.bookingsThisMonth} bookings` : ""}
+                  </p>
                 </div>
 
-                {/* Status */}
                 <StatusBadge status={client.status} />
-
               </div>
             );
           })}
