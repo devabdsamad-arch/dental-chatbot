@@ -49,7 +49,8 @@ export function getServiceDuration(config: ClientConfig, service: string): numbe
 // ================================================
 export async function getAvailableSlots(
   config: ClientConfig,
-  daysAhead = 5
+  daysAhead = 5,
+  slotIntervalMins = 15  // check every 15 mins — max flexibility
 ): Promise<AvailableSlot[]> {
 
   if (!config.googleCalendarId || !config.workingHours) {
@@ -60,12 +61,13 @@ export async function getAvailableSlots(
   try {
     const calendar   = getCalendarClient();
     const timezone   = config.timezone ?? "Australia/Melbourne";
-    const duration   = config.appointmentDuration ?? 60;
+    const duration   = config.appointmentDuration ?? 45;
     const calendarId = config.googleCalendarId;
 
     const now       = new Date();
     const windowEnd = addDays(now, daysAhead + 4);
 
+    // Get all busy blocks in one call
     const freebusyRes = await calendar.freebusy.query({
       requestBody: {
         timeMin:  now.toISOString(),
@@ -81,7 +83,7 @@ export async function getAvailableSlots(
     let daysCounted = 0;
     let cursor      = addDays(now, 1);
 
-    while (daysCounted < daysAhead) {
+    while (daysCounted < daysAhead && slots.length < 6) {
       const dayName = format(cursor, "EEEE").toLowerCase() as keyof typeof config.workingHours;
       const hours   = config.workingHours?.[dayName];
 
@@ -90,44 +92,47 @@ export async function getAvailableSlots(
         const [openH,  openM]  = h.open.split(":").map(Number);
         const [closeH, closeM] = h.close.split(":").map(Number);
 
-        // Build times in clinic timezone using date string
-        // This prevents the UTC offset bug on Vercel servers
         const dateStr  = format(cursor, "yyyy-MM-dd");
-        const openStr  = `${dateStr}T${String(openH).padStart(2, "0")}:${String(openM).padStart(2, "0")}:00`;
-        const closeStr = `${dateStr}T${String(closeH).padStart(2, "0")}:${String(closeM).padStart(2, "0")}:00`;
+        const openStr  = `${dateStr}T${String(openH).padStart(2,"0")}:${String(openM).padStart(2,"0")}:00`;
+        const closeStr = `${dateStr}T${String(closeH).padStart(2,"0")}:${String(closeM).padStart(2,"0")}:00`;
 
-        let slotStartUtc  = fromZonedTime(new Date(openStr), timezone);
-        const dayEndUtc   = fromZonedTime(new Date(closeStr), timezone);
+        // Scan every 15 minutes for maximum flexibility
+        // This means 9:00, 9:15, 9:30, 9:45 etc are all candidate slots
+        let scanUtc        = fromZonedTime(new Date(openStr), timezone);
+        const dayCloseUtc  = fromZonedTime(new Date(closeStr), timezone);
 
-        while (
-          isBefore(addMinutes(slotStartUtc, duration), dayEndUtc) ||
-          +addMinutes(slotStartUtc, duration) === +dayEndUtc
-        ) {
-          const slotEndUtc = addMinutes(slotStartUtc, duration);
+        while (isBefore(addMinutes(scanUtc, duration), dayCloseUtc) ||
+               +addMinutes(scanUtc, duration) === +dayCloseUtc) {
 
-          if (isAfter(slotStartUtc, now)) {
+          const slotEndUtc = addMinutes(scanUtc, duration);
+
+          // Must be in the future
+          if (isAfter(scanUtc, now)) {
             const overlaps = busyBlocks.some((block: any) => {
               const blockStart = parseISO(block.start);
               const blockEnd   = parseISO(block.end);
-              return (
-                isBefore(slotStartUtc, blockEnd) &&
-                isAfter(slotEndUtc, blockStart)
-              );
+              // Slot overlaps if it starts before block ends AND ends after block starts
+              return isBefore(scanUtc, blockEnd) && isAfter(slotEndUtc, blockStart);
             });
 
             if (!overlaps) {
-              // Convert back to clinic timezone for display
-              const slotStartLocal = toZonedTime(slotStartUtc, timezone);
-              slots.push({
-                date:     format(cursor, "EEEE d MMM"),
-                time:     format(slotStartLocal, "h:mm a"),
-                isoStart: slotStartUtc.toISOString(),
-                isoEnd:   slotEndUtc.toISOString(),
-              });
+              const slotLocal = toZonedTime(scanUtc, timezone);
+              // Only add clean times (on the hour or on :15 :30 :45)
+              // This avoids offering 8:07 or 9:22 which look weird
+              const mins = slotLocal.getMinutes();
+              if (mins % 15 === 0) {
+                slots.push({
+                  date:     format(cursor, "EEEE d MMM"),
+                  time:     format(slotLocal, "h:mm a"),
+                  isoStart: scanUtc.toISOString(),
+                  isoEnd:   slotEndUtc.toISOString(),
+                });
+              }
             }
           }
 
-          slotStartUtc = addMinutes(slotStartUtc, duration);
+          scanUtc = addMinutes(scanUtc, slotIntervalMins);
+          if (slots.length >= 6) break;
         }
 
         daysCounted++;

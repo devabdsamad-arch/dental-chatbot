@@ -5,12 +5,9 @@ import { AvailableSlot } from "./googleCalendar";
 // ------------------------------------------------
 // Validates requested times against real slots
 // BEFORE the AI generates a response.
-// The AI never makes availability decisions.
 // ================================================
 
-// Extract a requested time from the user's message
 export function extractRequestedTime(message: string): string | null {
-  // Match patterns like "10am", "10:00am", "10:00 AM", "10 am", "10"
   const match = message.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
   if (!match) return null;
 
@@ -20,35 +17,56 @@ export function extractRequestedTime(message: string): string | null {
 
   if (ampm === "pm" && hour < 12) hour += 12;
   if (ampm === "am" && hour === 12) hour = 0;
+  // If no am/pm given and hour is between 7-11, assume AM
+  // If between 1-6, assume PM (clinic hours context)
+  if (!ampm) {
+    if (hour >= 1 && hour <= 6) hour += 12;
+  }
 
   return `${String(hour).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
 }
 
-// Check if a requested time (HH:MM) matches any available slot
+// Normalize slot time "9:00 AM" -> "09:00"
+function normalizeSlotTime(time: string): string {
+  const m = time.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  if (!m) return "";
+  let h = parseInt(m[1]);
+  const mins = m[2];
+  if (m[3].toLowerCase() === "pm" && h < 12) h += 12;
+  if (m[3].toLowerCase() === "am" && h === 12) h = 0;
+  return `${String(h).padStart(2,"0")}:${mins}`;
+}
+
 export function findMatchingSlot(
   requestedTime: string,
   slots: AvailableSlot[]
 ): AvailableSlot | null {
   for (const slot of slots) {
-    // Normalize slot time to HH:MM 24hr
-    const slotMatch = slot.time.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-    if (!slotMatch) continue;
-
-    let slotHour = parseInt(slotMatch[1]);
-    const slotMins = parseInt(slotMatch[2]);
-    const slotAmpm = slotMatch[3].toLowerCase();
-
-    if (slotAmpm === "pm" && slotHour < 12) slotHour += 12;
-    if (slotAmpm === "am" && slotHour === 12) slotHour = 0;
-
-    const slotNormalized = `${String(slotHour).padStart(2, "0")}:${String(slotMins).padStart(2, "0")}`;
-
-    if (slotNormalized === requestedTime) return slot;
+    const normalized = normalizeSlotTime(slot.time);
+    if (normalized === requestedTime) return slot;
   }
   return null;
 }
 
-// Get 2 closest available slots to a requested time for suggesting alternatives
+// Check if a requested time falls within an available slot window
+// e.g. if 9:00 and 9:15 are both free, and patient asks for 9:00 — it's valid
+export function isTimeWithinAvailableWindow(
+  requestedTime: string,
+  slots: AvailableSlot[]
+): boolean {
+  const [reqH, reqM] = requestedTime.split(":").map(Number);
+  const reqMins = reqH * 60 + reqM;
+
+  return slots.some(slot => {
+    const norm = normalizeSlotTime(slot.time);
+    if (!norm) return false;
+    const [slotH, slotM] = norm.split(":").map(Number);
+    const slotMins = slotH * 60 + slotM;
+    // Within 30 minutes of an available slot = that window is free
+    return Math.abs(slotMins - reqMins) <= 30;
+  });
+}
+
 export function getClosestSlots(
   requestedTime: string,
   slots: AvailableSlot[]
@@ -58,13 +76,10 @@ export function getClosestSlots(
 
   return slots
     .map(slot => {
-      const m = slot.time.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-      if (!m) return { slot, diff: 9999 };
-      let h = parseInt(m[1]);
-      if (m[3].toLowerCase() === "pm" && h < 12) h += 12;
-      if (m[3].toLowerCase() === "am" && h === 12) h = 0;
-      const slotMins = h * 60 + parseInt(m[2]);
-      return { slot, diff: Math.abs(slotMins - reqMins) };
+      const norm = normalizeSlotTime(slot.time);
+      if (!norm) return { slot, diff: 9999 };
+      const [h, m] = norm.split(":").map(Number);
+      return { slot, diff: Math.abs(h * 60 + m - reqMins) };
     })
     .sort((a, b) => a.diff - b.diff)
     .slice(0, 2)
